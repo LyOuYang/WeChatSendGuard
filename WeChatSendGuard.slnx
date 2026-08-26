@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WeChatSendGuard.App/WeChatSendGuard.App.csproj" />
+    <Project Path="src/WeChatSendGuard.Core/WeChatSendGuard.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WeChatSendGuard.Core.Tests/WeChatSendGuard.Core.Tests.csproj" />
+  </Folder>
+</Solution>

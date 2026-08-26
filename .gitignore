@@ -1,0 +1,13 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+TestResults/
+
+# IDE and user-local files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Local publish artifacts
+publish/
