@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "assetVersion": "3.0.0-beta",
+  "managedBy": "group-bookmarks",
+  "files": [
+    "assets.json",
+    "README.md",
+    "scripts/validate-import-batch.js",
+    "skill/stage-bookmarks-changes/SKILL.md",
+    "skill/stage-bookmarks-full/SKILL.md",
+    "skill/stage-bookmarks-workflow/SKILL.md"
+  ]
+}

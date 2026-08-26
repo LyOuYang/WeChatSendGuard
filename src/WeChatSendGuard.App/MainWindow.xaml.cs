@@ -47,27 +47,45 @@ public partial class MainWindow : Window
         Activate();
         Topmost = true;
         Topmost = false;
+        Focus();
+    }
+
+    private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        Hide();
     }
 
     private bool IsExemptionMode => _settings.RuleMode == RuleMode.ConfirmUnlessExcluded;
+
+    private void NavTab_Checked(object sender, RoutedEventArgs e)
+    {
+        if (PageGuardList is null || PageRules is null || PageSystem is null)
+        {
+            return;
+        }
+
+        PageGuardList.Visibility = NavGuardTab.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        PageRules.Visibility = NavRulesTab.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        PageSystem.Visibility = NavSystemTab.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private void ConfigureChoices()
     {
         ConfirmationModeComboBox.ItemsSource = new[]
         {
+            new Choice<ConfirmationMode>(ConfirmationMode.Hold, "长按确认 (推荐 800ms)"),
             new Choice<ConfirmationMode>(ConfirmationMode.Click, "单击确认"),
-            new Choice<ConfirmationMode>(ConfirmationMode.Hold, "长按确认"),
             new Choice<ConfirmationMode>(ConfirmationMode.Phrase, "输入确认词"),
         };
         UnknownContextComboBox.ItemsSource = new[]
         {
             new Choice<UnknownContextBehavior>(UnknownContextBehavior.Confirm, "要求确认"),
             new Choice<UnknownContextBehavior>(UnknownContextBehavior.Block, "直接阻止"),
-        };
-        RuleModeComboBox.ItemsSource = new[]
-        {
-            new Choice<RuleMode>(RuleMode.ProtectListed, "保护名单模式：名单内会话需要确认"),
-            new Choice<RuleMode>(RuleMode.ConfirmUnlessExcluded, "免确认名单模式：名单外会话需要确认"),
         };
     }
 
@@ -78,10 +96,23 @@ public partial class MainWindow : Window
         {
             _settings = SettingsValidator.Sanitize(settings);
             EnabledCheckBox.IsChecked = _settings.Enabled;
-            RuleModeComboBox.SelectedValue = _settings.RuleMode;
+
+            if (_settings.RuleMode == RuleMode.ConfirmUnlessExcluded)
+            {
+                RadioConfirmUnlessExcluded.IsChecked = true;
+            }
+            else
+            {
+                RadioProtectListed.IsChecked = true;
+            }
+
+            UpdateModeVisualCards(_settings.RuleMode);
+
             KeyboardEnterCheckBox.IsChecked = _settings.InterceptKeyboardEnter;
             NumpadCheckBox.IsChecked = _settings.InterceptNumpadEnter;
             ConfirmationModeComboBox.SelectedValue = _settings.Confirmation.Mode;
+            UpdateConfirmationModeParameters(_settings.Confirmation.Mode);
+
             HoldMillisecondsTextBox.Text = _settings.Confirmation.HoldMilliseconds.ToString(CultureInfo.InvariantCulture);
             ConfirmationPhraseTextBox.Text = _settings.Confirmation.Phrase;
             TimeoutSecondsTextBox.Text = _settings.Confirmation.TimeoutSeconds.ToString(CultureInfo.InvariantCulture);
@@ -92,11 +123,114 @@ public partial class MainWindow : Window
             UpdateNumpadAvailability();
             SetNumericValidity(true, true, true);
             UpdateContextStatus(_services.ContextMonitor.Current);
-            SetSaveStatus("确认设置后点击保存", isError: false);
+            SetSaveStatus("就绪", isError: false);
         }
         finally
         {
             _loadingSettings = false;
+        }
+    }
+
+    private void RuleModeRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings)
+        {
+            return;
+        }
+
+        var mode = RadioConfirmUnlessExcluded.IsChecked == true
+            ? RuleMode.ConfirmUnlessExcluded
+            : RuleMode.ProtectListed;
+        SwitchRuleMode(mode);
+    }
+
+    private async void SwitchRuleMode(RuleMode newMode)
+    {
+        if (_loadingSettings)
+        {
+            return;
+        }
+
+        try
+        {
+            await _services.ApplySettingsAsync(_services.Settings with { RuleMode = newMode });
+            _settings = _services.Settings;
+            UpdateModeVisualCards(newMode);
+            RefreshActiveChatList();
+            StatusText.Text = IsExemptionMode ? "当前：全局拦截守护模式 (白名单)" : "当前：仅保护指定名单模式";
+            SetSaveStatus("✓ 名单模式已即时生效", isError: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _settings = _services.Settings;
+            _loadingSettings = true;
+            try
+            {
+                if (_settings.RuleMode == RuleMode.ConfirmUnlessExcluded)
+                {
+                    RadioConfirmUnlessExcluded.IsChecked = true;
+                }
+                else
+                {
+                    RadioProtectListed.IsChecked = true;
+                }
+                UpdateModeVisualCards(_settings.RuleMode);
+                RefreshActiveChatList();
+            }
+            finally
+            {
+                _loadingSettings = false;
+            }
+
+            SetSaveStatus("名单模式切换未成功", isError: true);
+        }
+    }
+
+    private void UpdateModeVisualCards(RuleMode mode)
+    {
+        var isExemption = mode == RuleMode.ConfirmUnlessExcluded;
+        GlobalWarningBanner.Visibility = isExemption ? Visibility.Visible : Visibility.Collapsed;
+        AddCurrentChatButton.Content = isExemption
+            ? "+ 将当前微信会话加入「免确认白名单」"
+            : "+ 将当前微信会话加入「拦截确认名单」";
+    }
+
+    private void ConfirmationModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ConfirmationModeComboBox.SelectedItem is Choice<ConfirmationMode> choice)
+        {
+            UpdateConfirmationModeParameters(choice.Value);
+        }
+        SettingChanged(sender, e);
+    }
+
+    private void UpdateConfirmationModeParameters(ConfirmationMode mode)
+    {
+        if (HoldMillisecondsLabel is null || HoldMillisecondsPanel is null || PhraseLabel is null || PhrasePanel is null)
+        {
+            return;
+        }
+
+        switch (mode)
+        {
+            case ConfirmationMode.Hold:
+                HoldMillisecondsLabel.Visibility = Visibility.Visible;
+                HoldMillisecondsPanel.Visibility = Visibility.Visible;
+                PhraseLabel.Visibility = Visibility.Collapsed;
+                PhrasePanel.Visibility = Visibility.Collapsed;
+                break;
+            case ConfirmationMode.Phrase:
+                HoldMillisecondsLabel.Visibility = Visibility.Collapsed;
+                HoldMillisecondsPanel.Visibility = Visibility.Collapsed;
+                PhraseLabel.Visibility = Visibility.Visible;
+                PhrasePanel.Visibility = Visibility.Visible;
+                break;
+            case ConfirmationMode.Click:
+                HoldMillisecondsLabel.Visibility = Visibility.Collapsed;
+                HoldMillisecondsPanel.Visibility = Visibility.Collapsed;
+                PhraseLabel.Visibility = Visibility.Collapsed;
+                PhrasePanel.Visibility = Visibility.Collapsed;
+                break;
         }
     }
 
@@ -115,7 +249,7 @@ public partial class MainWindow : Window
         var context = _services.ContextMonitor.LastRecognizedWeixin;
         if (!context.IsTrustedWeixin || !context.IsCompatibilityAvailable || !context.IsKnownChat || context.TargetKind is null || string.IsNullOrWhiteSpace(context.ChatTitle))
         {
-            MessageBox.Show(this, "请先在微信中打开一个可识别的群聊或联系人会话，并将光标放入消息输入框。", "无法加入", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "请先在微信中打开一个群聊或联系人，并将光标放入消息输入框。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -124,7 +258,7 @@ public partial class MainWindow : Window
         var currentList = exemptionList ? _services.Settings.ExemptedChats : _services.Settings.ProtectedChats;
         if (currentList.Any(chat => chat.TargetKind == context.TargetKind && ProtectedChatMatcher.TitleMatches(chat, normalized)))
         {
-            MessageBox.Show(this, "这个会话已经在当前名单中。", "无需重复添加", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "该会话已经在当前名单中，无需重复添加。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -133,8 +267,8 @@ public partial class MainWindow : Window
         {
             _settings = _services.Settings;
             RefreshActiveChatList(chat.Id);
-            StatusText.Text = exemptionList ? $"已加入免确认名单并生效：{normalized}" : $"已加入保护名单并生效：{normalized}";
-            SetSaveStatus("会话名单已立即生效", isError: false);
+            StatusText.Text = exemptionList ? $"当前：免确认白名单（已加入 {normalized}）" : $"当前：保护名单（已加入 {normalized}）";
+            SetSaveStatus("✓ 会话名单已立即生效", isError: false);
         }
     }
 
@@ -152,8 +286,8 @@ public partial class MainWindow : Window
         await _services.RemoveChatsAsync(selectedIds, IsExemptionMode);
         _settings = _services.Settings;
         RefreshActiveChatList();
-        StatusText.Text = IsExemptionMode ? $"已从免确认名单移除 {selectedIds.Count} 项并生效" : $"已从保护名单移除 {selectedIds.Count} 项并生效";
-        SetSaveStatus("会话名单已立即生效", isError: false);
+        StatusText.Text = IsExemptionMode ? $"当前：已从免确认名单移除 {selectedIds.Count} 项" : $"当前：已从保护名单移除 {selectedIds.Count} 项";
+        SetSaveStatus("✓ 会话名单已立即生效", isError: false);
     }
 
     private async void ImportCurrentListButton_Click(object sender, RoutedEventArgs e)
@@ -173,12 +307,12 @@ public partial class MainWindow : Window
             await _services.ApplySettingsAsync(next);
             _settings = _services.Settings;
             RefreshActiveChatList();
-            StatusText.Text = IsExemptionMode ? "免确认名单已导入并生效" : "保护名单已导入并生效";
-            SetSaveStatus("会话名单已立即生效", isError: false);
+            StatusText.Text = IsExemptionMode ? "当前：免确认名单已导入" : "当前：保护名单已导入";
+            SetSaveStatus("✓ 会话名单已立即生效", isError: false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            MessageBox.Show(this, $"导入失败：{ex.Message}", "导入会话配置", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"导入失败：{ex.Message}", "导入错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -198,44 +332,11 @@ public partial class MainWindow : Window
         {
             var chats = IsExemptionMode ? _services.Settings.ExemptedChats : _services.Settings.ProtectedChats;
             await File.WriteAllTextAsync(dialog.FileName, ProtectedChatExportCodec.Export(chats));
-            StatusText.Text = IsExemptionMode ? "免确认名单已导出" : "保护名单已导出";
+            StatusText.Text = IsExemptionMode ? "当前：免确认名单已导出" : "当前：保护名单已导出";
         }
         catch (IOException ex)
         {
-            MessageBox.Show(this, $"导出失败：{ex.Message}", "导出会话配置", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private async void RuleModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loadingSettings || RuleModeComboBox.SelectedItem is not Choice<RuleMode> selectedMode)
-        {
-            return;
-        }
-
-        try
-        {
-            await _services.ApplySettingsAsync(_services.Settings with { RuleMode = selectedMode.Value });
-            _settings = _services.Settings;
-            RefreshActiveChatList();
-            StatusText.Text = IsExemptionMode ? "已切换为免确认名单模式并生效" : "已切换为保护名单模式并生效";
-            SetSaveStatus("当前名单模式已立即生效", isError: false);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            _settings = _services.Settings;
-            _loadingSettings = true;
-            try
-            {
-                RuleModeComboBox.SelectedValue = _settings.RuleMode;
-                RefreshActiveChatList();
-            }
-            finally
-            {
-                _loadingSettings = false;
-            }
-
-            SetSaveStatus("名单模式未保存，仍使用上次有效设置", isError: true);
+            MessageBox.Show(this, $"导出失败：{ex.Message}", "导出错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -247,7 +348,7 @@ public partial class MainWindow : Window
         }
 
         UpdateNumpadAvailability();
-        SetSaveStatus("更改尚未保存", isError: false);
+        SetSaveStatus("更改尚未保存，点击保存后生效", isError: false);
     }
 
     private void SettingChanged(object sender, SelectionChangedEventArgs e)
@@ -257,7 +358,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetSaveStatus("更改尚未保存", isError: false);
+        SetSaveStatus("更改尚未保存，点击保存后生效", isError: false);
     }
 
     private void TextSettingChanged(object sender, TextChangedEventArgs e)
@@ -267,7 +368,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetSaveStatus("更改尚未保存", isError: false);
+        SetSaveStatus("更改尚未保存，点击保存后生效", isError: false);
     }
 
     private async Task<bool> CommitSettingsAsync()
@@ -284,13 +385,13 @@ public partial class MainWindow : Window
             SynchronizeNumericTextBoxes(_settings);
             UpdateNumpadAvailability();
             RefreshActiveChatList((ActiveChatsList.SelectedItem as ProtectedChat)?.Id);
-            SetSaveStatus("设置已保存并生效", isError: false);
+            SetSaveStatus("✓ 设置已保存并即时生效", isError: false);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             _settings = _services.Settings;
-            SetSaveStatus("未保存，仍使用上次有效设置", isError: true);
+            SetSaveStatus("保存失败，仍使用上次有效设置", isError: true);
             return false;
         }
     }
@@ -299,8 +400,7 @@ public partial class MainWindow : Window
     {
         settings = _settings;
         if (ConfirmationModeComboBox.SelectedItem is not Choice<ConfirmationMode> confirmationMode
-            || UnknownContextComboBox.SelectedItem is not Choice<UnknownContextBehavior> unknownBehavior
-            || RuleModeComboBox.SelectedItem is not Choice<RuleMode> ruleMode)
+            || UnknownContextComboBox.SelectedItem is not Choice<UnknownContextBehavior> unknownBehavior)
         {
             return false;
         }
@@ -327,13 +427,17 @@ public partial class MainWindow : Window
 
         if (!holdValid || !timeoutValid || !logRetentionValid)
         {
-            SetSaveStatus("请修正红色数字输入框后再保存", isError: true);
+            SetSaveStatus("请修正红色输入框中的数值后再保存", isError: true);
             return false;
         }
 
+        var ruleMode = RadioConfirmUnlessExcluded.IsChecked == true
+            ? RuleMode.ConfirmUnlessExcluded
+            : RuleMode.ProtectListed;
+
         var protectedChats = _settings.ProtectedChats.ToList();
         var exemptedChats = _settings.ExemptedChats.ToList();
-        if (ruleMode.Value == RuleMode.ConfirmUnlessExcluded)
+        if (ruleMode == RuleMode.ConfirmUnlessExcluded)
         {
             exemptedChats = UpdateSelectedAliases(exemptedChats, ActiveChatsList.SelectedItem);
         }
@@ -346,7 +450,7 @@ public partial class MainWindow : Window
         settings = SettingsValidator.Sanitize(_settings with
         {
             Enabled = EnabledCheckBox.IsChecked == true,
-            RuleMode = ruleMode.Value,
+            RuleMode = ruleMode,
             Confirmation = _settings.Confirmation with
             {
                 Mode = confirmationMode.Value,
@@ -377,12 +481,11 @@ public partial class MainWindow : Window
         _loadingSettings = true;
         try
         {
-            var chats = IsExemptionMode ? _settings.ExemptedChats : _settings.ProtectedChats;
-            ActiveChatListGroup.Header = IsExemptionMode ? "免确认的会话" : "需要二次确认的会话";
-            ActiveListDescription.Text = IsExemptionMode
-                ? "名单内的群聊或联系人可直接发送；其他已识别微信会话需要确认。"
-                : "名单内的群聊或联系人需要二次确认；其他会话正常发送。";
-            ActiveChatsList.ItemsSource = chats.ToList();
+            var chats = (IsExemptionMode ? _settings.ExemptedChats : _settings.ProtectedChats).ToList();
+            ActiveChatListTitleText.Text = IsExemptionMode ? "⚡ 免确认放行的白名单" : "🛡️ 需要二次确认的会话名单";
+            ActiveListCountText.Text = $"{chats.Count} 个会话";
+            EmptyListHint.Visibility = chats.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            ActiveChatsList.ItemsSource = chats;
             if (selectedId is not null)
             {
                 ActiveChatsList.SelectedItem = chats.FirstOrDefault(chat => chat.Id == selectedId.Value);
@@ -405,11 +508,11 @@ public partial class MainWindow : Window
         try
         {
             AliasesTextBox.IsEnabled = selected is not null;
-            AliasesTextBox.ToolTip = selectedChats.Count switch
+            AliasesHintText.Text = selectedChats.Count switch
             {
-                0 => "选择一个会话后可编辑别名",
-                1 => null,
-                _ => "同时选择多个会话时不能编辑别名",
+                0 => "匹配别名 (逗号或换行):",
+                1 => $"「{selected!.DisplayName}」别名:",
+                _ => "已选择多个会话",
             };
             AliasesTextBox.Text = selected is null
                 ? string.Empty
@@ -438,7 +541,7 @@ public partial class MainWindow : Window
     private void UpdateNumpadAvailability()
     {
         NumpadCheckBox.IsEnabled = KeyboardEnterCheckBox.IsChecked == true;
-        NumpadCheckBox.ToolTip = NumpadCheckBox.IsEnabled ? null : "启用主键盘 Enter 拦截后可用";
+        NumpadCheckBox.ToolTip = NumpadCheckBox.IsEnabled ? null : "需要先启用主键盘 Enter 拦截";
     }
 
     private static int ReadBoundedInteger(string text, int fallback, int minimum, int maximum, out bool valid)
@@ -480,7 +583,7 @@ public partial class MainWindow : Window
         SetTextBoxValidity(LogRetentionDaysTextBox, logRetentionValid);
     }
 
-    private static void SetTextBoxValidity(TextBox textBox, bool valid)
+    private void SetTextBoxValidity(TextBox textBox, bool valid)
     {
         if (valid)
         {
@@ -488,14 +591,16 @@ public partial class MainWindow : Window
         }
         else
         {
-            textBox.BorderBrush = Brushes.IndianRed;
+            textBox.BorderBrush = (Brush)FindResource("DangerBrush");
         }
     }
 
     private void SetSaveStatus(string text, bool isError)
     {
         SaveStatusText.Text = text;
-        SaveStatusText.Foreground = isError ? Brushes.IndianRed : new SolidColorBrush(Color.FromRgb(22, 119, 255));
+        SaveStatusText.Foreground = isError
+            ? (Brush)FindResource("DangerBrush")
+            : (Brush)FindResource("MutedBrush");
     }
 
     private void ContextMonitor_ContextChanged(object? sender, ChatContext context)
@@ -507,17 +612,15 @@ public partial class MainWindow : Window
     {
         if (!context.IsTrustedWeixin)
         {
-            StatusText.Text = context.RequiresElevation ? "微信权限不兼容" : "微信未在前台";
-            CompatibilityHint.Text = context.RequiresElevation
-                ? "微信以管理员权限运行。请用普通权限重新启动微信，本工具不会自动提权。"
-                : "打开微信并将光标放入群聊或联系人输入框后，可加入当前名单。";
+            StatusDot.Fill = (Brush)FindResource("MutedBrush");
+            StatusText.Text = context.RequiresElevation ? "当前：微信以管理员运行" : "当前：等待微信前台";
             return;
         }
 
         if (!context.IsCompatibilityAvailable)
         {
-            StatusText.Text = "微信界面不可识别";
-            CompatibilityHint.Text = "当前微信控件不可访问，工具不会宣称保护有效。";
+            StatusDot.Fill = (Brush)FindResource("DangerBrush");
+            StatusText.Text = "当前：微信控件不可识别";
             return;
         }
 
@@ -527,12 +630,17 @@ public partial class MainWindow : Window
             ChatTargetKind.Contact => "联系人",
             _ => "会话",
         };
-        StatusText.Text = context.IsMessageEditorFocused
-            ? $"当前{kind}：{context.ChatTitle ?? "未识别"}"
-            : "微信已在前台，输入框未聚焦";
-        CompatibilityHint.Text = IsExemptionMode
-            ? "免确认名单内的群聊和联系人直接发送；其他微信会话需要确认。"
-            : "保护名单内的群聊和联系人需要确认；其他会话正常发送。";
+
+        if (context.IsMessageEditorFocused)
+        {
+            StatusDot.Fill = (Brush)FindResource("AccentBrush");
+            StatusText.Text = $"当前：{kind} - {context.ChatTitle ?? "已连接"}";
+        }
+        else
+        {
+            StatusDot.Fill = (Brush)FindResource("WarningBrush");
+            StatusText.Text = "当前：输入框未聚焦";
+        }
     }
 
     private sealed record Choice<T>(T Value, string Label)

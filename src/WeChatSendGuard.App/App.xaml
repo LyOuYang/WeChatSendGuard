@@ -3,21 +3,492 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
-        <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#F7F8FA" />
+        <!-- WeChat Modern Green Palette -->
+        <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#F5F7F9" />
         <SolidColorBrush x:Key="PanelBrush" Color="#FFFFFF" />
-        <SolidColorBrush x:Key="MutedBrush" Color="#667085" />
-        <Style TargetType="Button">
-            <Setter Property="Padding" Value="12,7" />
-            <Setter Property="Margin" Value="0,0,8,0" />
+        <SolidColorBrush x:Key="PanelAltBrush" Color="#F8FAFC" />
+        <SolidColorBrush x:Key="InkBrush" Color="#111827" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#6B7280" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#E2E8F0" />
+        <SolidColorBrush x:Key="BorderHoverBrush" Color="#CBD5E1" />
+        <SolidColorBrush x:Key="BorderFocusBrush" Color="#07C160" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#07C160" />
+        <SolidColorBrush x:Key="AccentHoverBrush" Color="#06AD56" />
+        <SolidColorBrush x:Key="AccentPressedBrush" Color="#059B4C" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#E8F8F0" />
+        <SolidColorBrush x:Key="SuccessBrush" Color="#07C160" />
+        
+        <!-- Warning / Exemption Mode Gold -->
+        <SolidColorBrush x:Key="WarningBrush" Color="#D97706" />
+        <SolidColorBrush x:Key="WarningSoftBrush" Color="#FEF3C7" />
+        <SolidColorBrush x:Key="WarningBorderBrush" Color="#FDE68A" />
+
+        <!-- Danger / Block Red -->
+        <SolidColorBrush x:Key="DangerBrush" Color="#DC2626" />
+        <SolidColorBrush x:Key="DangerSoftBrush" Color="#FEE2E2" />
+
+        <!-- Badges -->
+        <SolidColorBrush x:Key="BadgeGroupBgBrush" Color="#E0F2FE" />
+        <SolidColorBrush x:Key="BadgeGroupFgBrush" Color="#0369A1" />
+        <SolidColorBrush x:Key="BadgeContactBgBrush" Color="#DCFCE7" />
+        <SolidColorBrush x:Key="BadgeContactFgBrush" Color="#15803D" />
+
+        <!-- Action Behavior Badges -->
+        <SolidColorBrush x:Key="BadgeBlockBgBrush" Color="#FEE2E2" />
+        <SolidColorBrush x:Key="BadgeBlockFgBrush" Color="#B91C1C" />
+        <SolidColorBrush x:Key="BadgePassBgBrush" Color="#ECFDF5" />
+        <SolidColorBrush x:Key="BadgePassFgBrush" Color="#047857" />
+
+        <!-- Vector Path Geometries -->
+        <Geometry x:Key="GeoShield">M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z</Geometry>
+        <Geometry x:Key="GeoList">M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2zM2 6h1v2H2V6zm0 5h1v2H2v-2zm0 5h1v2H2v-2z</Geometry>
+        <Geometry x:Key="GeoClock">M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.2 3.1.8-1.3-4.5-2.7V7z</Geometry>
+        <Geometry x:Key="GeoGear">M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z</Geometry>
+        <Geometry x:Key="GeoDelete">M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z</Geometry>
+        <Geometry x:Key="GeoEdit">M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z</Geometry>
+
+        <!-- Card Container Style -->
+        <Style x:Key="CardBorderStyle" TargetType="{x:Type Border}">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <!-- Window Caption Control Button Styles -->
+        <Style x:Key="WindowMinButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Width" Value="44" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="BtnChrome" Background="{TemplateBinding Background}">
+                            <Path Width="10" Height="1" Fill="{TemplateBinding Foreground}" Data="M0 0h10v1H0z" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnChrome" Property="Background" Value="#E5E7EB" />
+                                <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="WindowCloseButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Width" Value="44" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="BtnChrome" Background="{TemplateBinding Background}">
+                            <Path Width="10" Height="10" Fill="{TemplateBinding Foreground}" Stretch="Uniform" Data="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnChrome" Property="Background" Value="#EF4444" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Mode Protect Listed Card RadioButton Style -->
+        <Style x:Key="ModeProtectCardStyle" TargetType="{x:Type RadioButton}">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RadioButton}">
+                        <Border x:Name="CardChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="🛡️" FontSize="13" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="仅保护指定名单" FontWeight="Bold" FontSize="13" Foreground="{StaticResource InkBrush}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock Text="名单内 🛑 弹窗确认 · 名单外 ⚡ 直接发送" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,3,0,0" />
+                                </StackPanel>
+                                <Border x:Name="Indicator"
+                                        Grid.Column="1"
+                                        Width="18"
+                                        Height="18"
+                                        CornerRadius="9"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1.5"
+                                        Background="White"
+                                        VerticalAlignment="Center">
+                                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="Transparent" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="{StaticResource BorderHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CardChrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="#86EFAC" />
+                                <Setter TargetName="CardChrome" Property="BorderThickness" Value="1.5" />
+                                <Setter TargetName="Indicator" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Mode Exempted / Whitelist Card RadioButton Style -->
+        <Style x:Key="ModeExemptCardStyle" TargetType="{x:Type RadioButton}">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RadioButton}">
+                        <Border x:Name="CardChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="⚡" FontSize="13" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="全局拦截守护 (白名单)" FontWeight="Bold" FontSize="13" Foreground="{StaticResource InkBrush}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock Text="名单外 🛑 强制拦截 · 名单内 ⚡ 免确认" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,3,0,0" />
+                                </StackPanel>
+                                <Border x:Name="Indicator"
+                                        Grid.Column="1"
+                                        Width="18"
+                                        Height="18"
+                                        CornerRadius="9"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1.5"
+                                        Background="White"
+                                        VerticalAlignment="Center">
+                                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="Transparent" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="{StaticResource BorderHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CardChrome" Property="Background" Value="{StaticResource WarningSoftBrush}" />
+                                <Setter TargetName="CardChrome" Property="BorderBrush" Value="{StaticResource WarningBorderBrush}" />
+                                <Setter TargetName="CardChrome" Property="BorderThickness" Value="1.5" />
+                                <Setter TargetName="Indicator" Property="BorderBrush" Value="{StaticResource WarningBrush}" />
+                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource WarningBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Base Button Style -->
+        <Style x:Key="ButtonBaseStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="MinWidth" Value="68" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#F8FAFC" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{StaticResource BorderHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#F1F5F9" />
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.9" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderThickness" Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="{x:Type Button}" BasedOn="{StaticResource ButtonBaseStyle}" />
+
+        <!-- Primary Button (WeChat Green) -->
+        <Style x:Key="PrimaryButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource ButtonBaseStyle}">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{StaticResource AccentHoverBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{StaticResource AccentHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{StaticResource AccentPressedBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{StaticResource AccentPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#047857" />
+                                <Setter TargetName="ButtonChrome" Property="BorderThickness" Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Secondary Button -->
+        <Style x:Key="SecondaryButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource ButtonBaseStyle}">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        </Style>
+
+        <!-- Quiet / Subdued Button -->
+        <Style x:Key="QuietButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource ButtonBaseStyle}">
+            <Setter Property="Background" Value="{StaticResource PanelAltBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="FontWeight" Value="Normal" />
+        </Style>
+
+        <!-- Sidebar Navigation RadioButton -->
+        <Style x:Key="NavRadioButtonStyle" TargetType="{x:Type RadioButton}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Height" Value="38" />
+            <Setter Property="Margin" Value="0,3" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RadioButton}">
+                        <Border x:Name="NavChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="NavChrome" Property="Background" Value="#E9ECEF" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="NavChrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter Property="Foreground" Value="#047857" />
+                                <Setter Property="FontWeight" Value="Bold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TextBox Style (Zero Clipping, Absolute Vertical Centering) -->
+        <Style TargetType="{x:Type TextBox}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,2" />
             <Setter Property="MinHeight" Value="32" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type TextBox}">
+                        <Border x:Name="TextBoxChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Hidden"
+                                          Margin="0"
+                                          Padding="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TextBoxChrome" Property="BorderBrush" Value="{StaticResource BorderHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="TextBoxChrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="TextBoxChrome" Property="BorderThickness" Value="1.5" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="TextBoxChrome" Property="Opacity" Value="0.55" />
+                                <Setter TargetName="TextBoxChrome" Property="Background" Value="{StaticResource PanelAltBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="Padding" Value="7,5" />
-            <Setter Property="Margin" Value="0,3,0,3" />
+
+        <!-- ComboBox Style -->
+        <Style TargetType="{x:Type ComboBox}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Padding" Value="6,4" />
-            <Setter Property="Margin" Value="0,3,0,3" />
+
+        <!-- CheckBox Style -->
+        <Style TargetType="{x:Type CheckBox}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Padding" Value="6,0" />
+            <Setter Property="MinHeight" Value="24" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <!-- ListBox Style -->
+        <Style TargetType="{x:Type ListBox}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+
+        <!-- ListBoxItem Style -->
+        <Style TargetType="{x:Type ListBoxItem}">
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="Margin" Value="0,2" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                        <Border x:Name="ItemChrome"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ItemChrome" Property="Background" Value="#F8FAFC" />
+                                <Setter TargetName="ItemChrome" Property="BorderBrush" Value="#E2E8F0" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemChrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="ItemChrome" Property="BorderBrush" Value="#BBF7D0" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="ItemChrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="ItemChrome" Property="BorderThickness" Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ItemChrome" Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Application.Resources>
 </Application>

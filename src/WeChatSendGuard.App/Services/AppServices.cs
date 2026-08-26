@@ -352,31 +352,32 @@ internal sealed class AppServices : IDisposable
     {
         if (!_settings.Enabled)
         {
-            _tray.SetStatus("WeChatSendGuard：发送保护已暂停");
+            _tray.SetStatus("状态：守护已暂停");
             return;
         }
 
         if (context.RequiresElevation)
         {
-            _tray.SetStatus("WeChatSendGuard：微信权限不兼容");
+            _tray.SetStatus("状态：微信权限不兼容 (需普通权限)");
             return;
         }
 
         if (!context.IsTrustedWeixin)
         {
-            _tray.SetStatus("WeChatSendGuard：等待微信前台");
+            _tray.SetStatus("状态：等待微信前台");
             return;
         }
 
         if (!context.IsCompatibilityAvailable)
         {
-            _tray.SetStatus("WeChatSendGuard：微信界面不可识别");
+            _tray.SetStatus("状态：微信界面不可识别");
             return;
         }
 
+        var chatTitle = string.IsNullOrWhiteSpace(context.ChatTitle) ? "已就绪" : context.ChatTitle;
         _tray.SetStatus(context.IsMessageEditorFocused
-            ? "WeChatSendGuard：发送保护已就绪"
-            : "WeChatSendGuard：等待消息输入框焦点");
+            ? $"状态：守护中 ({chatTitle})"
+            : $"状态：等待输入框焦点 ({chatTitle})");
     }
 
     private void ApplyStartupRegistration()

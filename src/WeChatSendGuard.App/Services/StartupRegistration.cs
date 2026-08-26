@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.IO;
 
 namespace WeChatSendGuard.App.Services;
 
@@ -24,7 +25,7 @@ internal static class StartupRegistration
             return false;
         }
 
-        key.SetValue(ValueName, $"\"{executable}\"", RegistryValueKind.String);
+        key.SetValue(ValueName, $"\"{executable}\" --silent", RegistryValueKind.String);
         return true;
     }
 }

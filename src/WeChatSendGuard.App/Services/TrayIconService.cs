@@ -7,7 +7,7 @@ internal sealed class TrayIconService : IDisposable
 {
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ToolStripMenuItem _statusItem;
-    private readonly Forms.ToolStripMenuItem _pauseItem;
+    private readonly Forms.ToolStripMenuItem _enableProtectionItem;
     private readonly Action<bool> _setEnabled;
     private bool _suppressToggle;
     private bool _disposed;
@@ -21,20 +21,39 @@ internal sealed class TrayIconService : IDisposable
         Action exit)
     {
         _setEnabled = setEnabled;
-        _statusItem = new Forms.ToolStripMenuItem("正在启动...") { Enabled = false };
-        _pauseItem = new Forms.ToolStripMenuItem("启用发送保护") { CheckOnClick = true };
-        _pauseItem.CheckedChanged += (_, _) =>
+        
+        // Status header (Read-only, clearly visible)
+        _statusItem = new Forms.ToolStripMenuItem("正在检测微信...")
         {
-            if (!_suppressToggle)
+            Enabled = false,
+            Font = new Drawing.Font("Microsoft YaHei UI", 9F, Drawing.FontStyle.Regular)
+        };
+
+        // Open Settings (Primary Action)
+        var openSettingsItem = new Forms.ToolStripMenuItem("打开主设置", null, (_, _) => showSettings())
+        {
+            Font = new Drawing.Font("Microsoft YaHei UI", 9F, Drawing.FontStyle.Bold)
+        };
+
+        // Protection Toggle (Stable text with clear Checkbox)
+        _enableProtectionItem = new Forms.ToolStripMenuItem("启用发送守护")
+        {
+            CheckOnClick = true,
+            Checked = true
+        };
+        _enableProtectionItem.CheckedChanged += (sender, _) =>
+        {
+            if (!_suppressToggle && sender is Forms.ToolStripMenuItem item)
             {
-                _setEnabled(_pauseItem.Checked);
+                _setEnabled(item.Checked);
             }
         };
 
+        // Bypass Submenu
         var bypassMenu = new Forms.ToolStripMenuItem("临时放行当前会话");
         foreach (var minutes in new[] { 1, 5, 15 })
         {
-            var item = new Forms.ToolStripMenuItem($"放行 {minutes} 分钟");
+            var item = new Forms.ToolStripMenuItem($"临时放行 {minutes} 分钟");
             item.Click += (_, _) => grantTemporaryBypass(minutes);
             bypassMenu.DropDownItems.Add(item);
         }
@@ -42,13 +61,13 @@ internal sealed class TrayIconService : IDisposable
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add(_statusItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("打开设置", null, (_, _) => showSettings());
-        menu.Items.Add("加入当前名单", null, (_, _) => protectCurrentGroup());
+        menu.Items.Add(openSettingsItem);
+        menu.Items.Add("加入当前微信会话", null, (_, _) => protectCurrentGroup());
         menu.Items.Add(bypassMenu);
-        menu.Items.Add(_pauseItem);
-        menu.Items.Add("查看状态", null, (_, _) => showStatus());
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => exit());
+        menu.Items.Add(_enableProtectionItem);
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("退出 WeChatSendGuard", null, (_, _) => exit());
 
         _icon = new Forms.NotifyIcon
         {
@@ -63,8 +82,7 @@ internal sealed class TrayIconService : IDisposable
     public void SetProtectionEnabled(bool enabled)
     {
         _suppressToggle = true;
-        _pauseItem.Checked = enabled;
-        _pauseItem.Text = enabled ? "启用发送保护" : "发送保护已暂停";
+        _enableProtectionItem.Checked = enabled;
         _suppressToggle = false;
     }
 
