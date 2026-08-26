@@ -80,7 +80,7 @@ internal sealed class AppServices : IDisposable
         return Task.FromResult(services);
     }
 
-    public void Start()
+    public void Start(bool openSettingsOnStartup)
     {
         if (_started || _disposed)
         {
@@ -102,7 +102,7 @@ internal sealed class AppServices : IDisposable
             _tray.ShowWarning("发送保护未启动", ex.Message);
         }
 
-        if (_settings.ProtectedChats.Count == 0 && _settings.ExemptedChats.Count == 0)
+        if (openSettingsOnStartup)
         {
             _dispatcher.BeginInvoke(ShowSettings, DispatcherPriority.ApplicationIdle);
         }
@@ -222,13 +222,24 @@ internal sealed class AppServices : IDisposable
 
     public async Task RemoveChatAsync(Guid chatId, bool exemptionList)
     {
+        await RemoveChatsAsync([chatId], exemptionList);
+    }
+
+    public async Task RemoveChatsAsync(IEnumerable<Guid> chatIds, bool exemptionList)
+    {
+        var ids = chatIds.Where(static id => id != Guid.Empty).ToHashSet();
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
         await _settingsWriteLock.WaitAsync();
         try
         {
             var current = Settings;
             var next = exemptionList
-                ? current with { ExemptedChats = current.ExemptedChats.Where(chat => chat.Id != chatId).ToList() }
-                : current with { ProtectedChats = current.ProtectedChats.Where(chat => chat.Id != chatId).ToList() };
+                ? current with { ExemptedChats = current.ExemptedChats.Where(chat => !ids.Contains(chat.Id)).ToList() }
+                : current with { ProtectedChats = current.ProtectedChats.Where(chat => !ids.Contains(chat.Id)).ToList() };
             await ApplySettingsCoreAsync(next);
         }
         finally

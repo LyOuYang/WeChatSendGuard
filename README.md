@@ -22,7 +22,7 @@ Windows tray utility that adds a confirmation step before sending an `Enter`-sub
 & 'C:\Program Files\dotnet\dotnet.exe' run --project .\src\WeChatSendGuard.App\WeChatSendGuard.App.csproj
 ```
 
-The first run opens settings. Switch to a Weixin group or contact, then use **加入当前会话** or `Ctrl+Alt+B`; adding a session takes effect immediately. Settings have no Save button: switches, list operations, and text fields are applied automatically. There are two independent lists and rule modes:
+The first run opens settings. Switch to a Weixin group or contact, then use **加入当前会话** or `Ctrl+Alt+B`; adding, importing, and removing sessions take effect immediately. Hold `Ctrl` or `Shift` to select multiple sessions before using **移除选中项**. Confirmation, input-entry, startup, and log settings take effect only after **保存设置** is clicked. There are two independent lists and rule modes:
 
 - **保护名单模式**: only sessions in the “需要二次确认” list require confirmation.
 - **免确认名单模式**: sessions in the “免确认的会话” list send directly; every other recognized Weixin group or contact requires confirmation.
@@ -44,11 +44,12 @@ The published `win-x64` directory is the deliverable: keep all of its files toge
 
 1. Open a group or contact in Weixin and focus its message editor.
 2. Add it to the current mode's list, switch modes, and verify that only the corresponding independent list is shown.
-3. Change a setting or alias, close and reopen settings, and verify it was applied without a Save button.
-4. Press main `Enter` and numpad `Enter`: a dark confirmation window must appear only when the active rule requires it and the message must remain a draft.
-5. Hold the confirm button until it completes: the app must return to the same message editor and send exactly once. A short hold or cancellation must keep the draft. The matching audit log must contain `send: injected`.
-6. Check that `Shift+Enter`, IME candidate confirmation, ordinary Weixin chats, and non-Weixin applications behave normally.
-7. Switch groups or contacts, close Weixin, or switch to another application while confirmation is open: sending must be cancelled.
-8. If sending does not occur, inspect the same attempt's `send-diagnostic` entry in the audit log. Do not send the message text or chat title when sharing that entry.
+3. Change a confirmation or input-entry setting, close and reopen settings without saving, and verify the previous setting remains active. Then click **保存设置** and verify the new setting persists.
+4. Select several sessions with `Ctrl` or `Shift`, remove them together, and verify the current list is updated immediately.
+5. Press main `Enter` and numpad `Enter`: a dark confirmation window must appear only when the active rule requires it and the message must remain a draft.
+6. Hold the confirm button until it completes: the app must return to the same message editor and send exactly once. A short hold or cancellation must keep the draft. The matching audit log must contain `send: injected`.
+7. Check that `Shift+Enter`, IME candidate confirmation, ordinary Weixin chats, and non-Weixin applications behave normally.
+8. Switch groups or contacts, close Weixin, or switch to another application while confirmation is open: sending must be cancelled.
+9. If sending does not occur, inspect the same attempt's `send-diagnostic` entry in the audit log. Do not send the message text or chat title when sharing that entry.
 
 The MVP deliberately does not intercept clicks on Weixin's Send button.

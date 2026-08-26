@@ -1,8 +1,8 @@
 using System.Globalization;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Threading;
 using Microsoft.Win32;
 using WeChatSendGuard.App.Services;
 using WeChatSendGuard.Core.Configuration;
@@ -12,10 +12,7 @@ namespace WeChatSendGuard.App;
 
 public partial class MainWindow : Window
 {
-    private static readonly TimeSpan AutoSaveDelay = TimeSpan.FromMilliseconds(400);
-
     private readonly AppServices _services;
-    private readonly DispatcherTimer _autoSaveTimer;
     private AppSettings _settings;
     private bool _loadingSettings;
 
@@ -24,21 +21,13 @@ public partial class MainWindow : Window
         _services = services;
         _settings = SettingsValidator.Sanitize(settings);
         _loadingSettings = true;
-        _autoSaveTimer = new DispatcherTimer { Interval = AutoSaveDelay };
-        _autoSaveTimer.Tick += AutoSaveTimer_Tick;
 
         InitializeComponent();
         ConfigureChoices();
         LoadSettings(_settings);
         _services.ContextMonitor.ContextChanged += ContextMonitor_ContextChanged;
-        Closing += (_, _) =>
-        {
-            _autoSaveTimer.Stop();
-            _ = CommitSettingsAsync(allowInvalidNumbers: false);
-        };
         Closed += (_, _) =>
         {
-            _autoSaveTimer.Stop();
             _services.ContextMonitor.ContextChanged -= ContextMonitor_ContextChanged;
         };
     }
@@ -103,12 +92,17 @@ public partial class MainWindow : Window
             UpdateNumpadAvailability();
             SetNumericValidity(true, true, true);
             UpdateContextStatus(_services.ContextMonitor.Current);
-            SetAutoSaveStatus("所有更改自动生效", isError: false);
+            SetSaveStatus("确认设置后点击保存", isError: false);
         }
         finally
         {
             _loadingSettings = false;
         }
+    }
+
+    private async void SaveSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        await CommitSettingsAsync();
     }
 
     private async void AddCurrentChatButton_Click(object sender, RoutedEventArgs e)
@@ -118,11 +112,6 @@ public partial class MainWindow : Window
 
     private async Task AddCurrentChatAsync()
     {
-        if (!await CommitSettingsAsync(allowInvalidNumbers: false))
-        {
-            return;
-        }
-
         var context = _services.ContextMonitor.LastRecognizedWeixin;
         if (!context.IsTrustedWeixin || !context.IsCompatibilityAvailable || !context.IsKnownChat || context.TargetKind is null || string.IsNullOrWhiteSpace(context.ChatTitle))
         {
@@ -145,31 +134,30 @@ public partial class MainWindow : Window
             _settings = _services.Settings;
             RefreshActiveChatList(chat.Id);
             StatusText.Text = exemptionList ? $"已加入免确认名单并生效：{normalized}" : $"已加入保护名单并生效：{normalized}";
-            SetAutoSaveStatus("已自动保存", isError: false);
+            SetSaveStatus("会话名单已立即生效", isError: false);
         }
     }
 
     private async void RemoveCurrentChatButton_Click(object sender, RoutedEventArgs e)
     {
-        if (ActiveChatsList.SelectedItem is not ProtectedChat selected || !await CommitSettingsAsync(allowInvalidNumbers: false))
+        var selectedIds = ActiveChatsList.SelectedItems
+            .OfType<ProtectedChat>()
+            .Select(static chat => chat.Id)
+            .ToList();
+        if (selectedIds.Count == 0)
         {
             return;
         }
 
-        await _services.RemoveChatAsync(selected.Id, IsExemptionMode);
+        await _services.RemoveChatsAsync(selectedIds, IsExemptionMode);
         _settings = _services.Settings;
         RefreshActiveChatList();
-        StatusText.Text = IsExemptionMode ? "已从免确认名单移除并立即生效" : "已从保护名单移除并立即生效";
-        SetAutoSaveStatus("已自动保存", isError: false);
+        StatusText.Text = IsExemptionMode ? $"已从免确认名单移除 {selectedIds.Count} 项并生效" : $"已从保护名单移除 {selectedIds.Count} 项并生效";
+        SetSaveStatus("会话名单已立即生效", isError: false);
     }
 
     private async void ImportCurrentListButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!await CommitSettingsAsync(allowInvalidNumbers: false))
-        {
-            return;
-        }
-
         var dialog = new OpenFileDialog { Filter = "会话配置 (*.json)|*.json|所有文件 (*.*)|*.*" };
         if (dialog.ShowDialog(this) != true)
         {
@@ -186,7 +174,7 @@ public partial class MainWindow : Window
             _settings = _services.Settings;
             RefreshActiveChatList();
             StatusText.Text = IsExemptionMode ? "免确认名单已导入并生效" : "保护名单已导入并生效";
-            SetAutoSaveStatus("已自动保存", isError: false);
+            SetSaveStatus("会话名单已立即生效", isError: false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
@@ -196,11 +184,6 @@ public partial class MainWindow : Window
 
     private async void ExportCurrentListButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!await CommitSettingsAsync(allowInvalidNumbers: false))
-        {
-            return;
-        }
-
         var dialog = new SaveFileDialog
         {
             Filter = "会话配置 (*.json)|*.json",
@@ -213,7 +196,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var chats = IsExemptionMode ? _settings.ExemptedChats : _settings.ProtectedChats;
+            var chats = IsExemptionMode ? _services.Settings.ExemptedChats : _services.Settings.ProtectedChats;
             await File.WriteAllTextAsync(dialog.FileName, ProtectedChatExportCodec.Export(chats));
             StatusText.Text = IsExemptionMode ? "免确认名单已导出" : "保护名单已导出";
         }
@@ -225,40 +208,56 @@ public partial class MainWindow : Window
 
     private async void RuleModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingSettings || RuleModeComboBox.SelectedItem is not Choice<RuleMode>)
+        if (_loadingSettings || RuleModeComboBox.SelectedItem is not Choice<RuleMode> selectedMode)
         {
             return;
         }
 
-        _autoSaveTimer.Stop();
-        if (await CommitSettingsAsync(allowInvalidNumbers: true))
+        try
         {
+            await _services.ApplySettingsAsync(_services.Settings with { RuleMode = selectedMode.Value });
+            _settings = _services.Settings;
             RefreshActiveChatList();
             StatusText.Text = IsExemptionMode ? "已切换为免确认名单模式并生效" : "已切换为保护名单模式并生效";
+            SetSaveStatus("当前名单模式已立即生效", isError: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _settings = _services.Settings;
+            _loadingSettings = true;
+            try
+            {
+                RuleModeComboBox.SelectedValue = _settings.RuleMode;
+                RefreshActiveChatList();
+            }
+            finally
+            {
+                _loadingSettings = false;
+            }
+
+            SetSaveStatus("名单模式未保存，仍使用上次有效设置", isError: true);
         }
     }
 
-    private async void ImmediateSettingChanged(object sender, RoutedEventArgs e)
+    private void SettingChanged(object sender, RoutedEventArgs e)
     {
         if (_loadingSettings)
         {
             return;
         }
 
-        _autoSaveTimer.Stop();
         UpdateNumpadAvailability();
-        await CommitSettingsAsync(allowInvalidNumbers: true);
+        SetSaveStatus("更改尚未保存", isError: false);
     }
 
-    private async void ImmediateSettingChanged(object sender, SelectionChangedEventArgs e)
+    private void SettingChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSettings)
         {
             return;
         }
 
-        _autoSaveTimer.Stop();
-        await CommitSettingsAsync(allowInvalidNumbers: true);
+        SetSaveStatus("更改尚未保存", isError: false);
     }
 
     private void TextSettingChanged(object sender, TextChangedEventArgs e)
@@ -268,55 +267,37 @@ public partial class MainWindow : Window
             return;
         }
 
-        _autoSaveTimer.Stop();
-        _autoSaveTimer.Start();
+        SetSaveStatus("更改尚未保存", isError: false);
     }
 
-    private async void TextSettingLostFocus(object sender, RoutedEventArgs e)
+    private async Task<bool> CommitSettingsAsync()
     {
-        if (_loadingSettings)
-        {
-            return;
-        }
-
-        _autoSaveTimer.Stop();
-        await CommitSettingsAsync(allowInvalidNumbers: false);
-    }
-
-    private async void AutoSaveTimer_Tick(object? sender, EventArgs e)
-    {
-        _autoSaveTimer.Stop();
-        await CommitSettingsAsync(allowInvalidNumbers: false);
-    }
-
-    private async Task<bool> CommitSettingsAsync(bool allowInvalidNumbers)
-    {
-        if (_loadingSettings || !TryCreateSettings(allowInvalidNumbers, out var settings, out var validationMessage))
+        if (_loadingSettings || !TryCreateSettings(out var settings))
         {
             return false;
         }
 
-        _settings = settings;
         try
         {
             await _services.ApplySettingsAsync(settings);
             _settings = _services.Settings;
+            SynchronizeNumericTextBoxes(_settings);
             UpdateNumpadAvailability();
-            SetAutoSaveStatus(validationMessage ?? "已自动保存", validationMessage is not null);
+            RefreshActiveChatList((ActiveChatsList.SelectedItem as ProtectedChat)?.Id);
+            SetSaveStatus("设置已保存并生效", isError: false);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             _settings = _services.Settings;
-            SetAutoSaveStatus("未保存，仍使用上次有效设置", isError: true);
+            SetSaveStatus("未保存，仍使用上次有效设置", isError: true);
             return false;
         }
     }
 
-    private bool TryCreateSettings(bool allowInvalidNumbers, out AppSettings settings, out string? validationMessage)
+    private bool TryCreateSettings(out AppSettings settings)
     {
         settings = _settings;
-        validationMessage = null;
         if (ConfirmationModeComboBox.SelectedItem is not Choice<ConfirmationMode> confirmationMode
             || UnknownContextComboBox.SelectedItem is not Choice<UnknownContextBehavior> unknownBehavior
             || RuleModeComboBox.SelectedItem is not Choice<RuleMode> ruleMode)
@@ -333,7 +314,7 @@ public partial class MainWindow : Window
         var timeoutSeconds = ReadBoundedInteger(
             TimeoutSecondsTextBox.Text,
             _settings.Confirmation.TimeoutSeconds,
-            5,
+            1,
             30,
             out var timeoutValid);
         var logRetentionDays = ReadBoundedInteger(
@@ -346,17 +327,13 @@ public partial class MainWindow : Window
 
         if (!holdValid || !timeoutValid || !logRetentionValid)
         {
-            validationMessage = "数字设置未应用，请修正红色输入框";
-            if (!allowInvalidNumbers)
-            {
-                SetAutoSaveStatus(validationMessage, isError: true);
-                return false;
-            }
+            SetSaveStatus("请修正红色数字输入框后再保存", isError: true);
+            return false;
         }
 
         var protectedChats = _settings.ProtectedChats.ToList();
         var exemptedChats = _settings.ExemptedChats.ToList();
-        if (_settings.RuleMode == RuleMode.ConfirmUnlessExcluded)
+        if (ruleMode.Value == RuleMode.ConfirmUnlessExcluded)
         {
             exemptedChats = UpdateSelectedAliases(exemptedChats, ActiveChatsList.SelectedItem);
         }
@@ -391,14 +368,13 @@ public partial class MainWindow : Window
 
     private void ActiveChatsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        ShowSelectedAliases(ActiveChatsList.SelectedItem as ProtectedChat);
+        ShowSelectedAliases();
     }
 
     private void RefreshActiveChatList(Guid? selectedId = null)
     {
         var wasLoading = _loadingSettings;
         _loadingSettings = true;
-        _autoSaveTimer.Stop();
         try
         {
             var chats = IsExemptionMode ? _settings.ExemptedChats : _settings.ProtectedChats;
@@ -417,16 +393,24 @@ public partial class MainWindow : Window
             _loadingSettings = wasLoading;
         }
 
-        ShowSelectedAliases(ActiveChatsList.SelectedItem as ProtectedChat);
+        ShowSelectedAliases();
     }
 
-    private void ShowSelectedAliases(ProtectedChat? selected)
+    private void ShowSelectedAliases()
     {
+        var selectedChats = ActiveChatsList.SelectedItems.OfType<ProtectedChat>().Take(2).ToList();
+        var selected = selectedChats.Count == 1 ? selectedChats[0] : null;
         var wasLoading = _loadingSettings;
         _loadingSettings = true;
-        _autoSaveTimer.Stop();
         try
         {
+            AliasesTextBox.IsEnabled = selected is not null;
+            AliasesTextBox.ToolTip = selectedChats.Count switch
+            {
+                0 => "选择一个会话后可编辑别名",
+                1 => null,
+                _ => "同时选择多个会话时不能编辑别名",
+            };
             AliasesTextBox.Text = selected is null
                 ? string.Empty
                 : string.Join(Environment.NewLine, selected.Aliases);
@@ -439,7 +423,7 @@ public partial class MainWindow : Window
 
     private List<ProtectedChat> UpdateSelectedAliases(IEnumerable<ProtectedChat> chats, object? selectedItem)
     {
-        if (selectedItem is not ProtectedChat selected)
+        if (ActiveChatsList.SelectedItems.Count != 1 || selectedItem is not ProtectedChat selected)
         {
             return chats.ToList();
         }
@@ -459,10 +443,34 @@ public partial class MainWindow : Window
 
     private static int ReadBoundedInteger(string text, int fallback, int minimum, int maximum, out bool valid)
     {
-        valid = int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+        var normalized = text.Normalize(NormalizationForm.FormKC).Trim();
+        if (normalized.Length == 0)
+        {
+            valid = true;
+            return fallback;
+        }
+
+        valid = int.TryParse(normalized, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
             && value >= minimum
             && value <= maximum;
         return valid ? value : fallback;
+    }
+
+    private void SynchronizeNumericTextBoxes(AppSettings settings)
+    {
+        var wasLoading = _loadingSettings;
+        _loadingSettings = true;
+        try
+        {
+            HoldMillisecondsTextBox.Text = settings.Confirmation.HoldMilliseconds.ToString(CultureInfo.InvariantCulture);
+            TimeoutSecondsTextBox.Text = settings.Confirmation.TimeoutSeconds.ToString(CultureInfo.InvariantCulture);
+            LogRetentionDaysTextBox.Text = settings.LogRetentionDays.ToString(CultureInfo.InvariantCulture);
+            SetNumericValidity(true, true, true);
+        }
+        finally
+        {
+            _loadingSettings = wasLoading;
+        }
     }
 
     private void SetNumericValidity(bool holdValid, bool timeoutValid, bool logRetentionValid)
@@ -484,10 +492,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetAutoSaveStatus(string text, bool isError)
+    private void SetSaveStatus(string text, bool isError)
     {
-        AutoSaveStatusText.Text = text;
-        AutoSaveStatusText.Foreground = isError ? Brushes.IndianRed : new SolidColorBrush(Color.FromRgb(22, 119, 255));
+        SaveStatusText.Text = text;
+        SaveStatusText.Foreground = isError ? Brushes.IndianRed : new SolidColorBrush(Color.FromRgb(22, 119, 255));
     }
 
     private void ContextMonitor_ContextChanged(object? sender, ChatContext context)

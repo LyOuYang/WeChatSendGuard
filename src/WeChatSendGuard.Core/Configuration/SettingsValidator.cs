@@ -20,7 +20,7 @@ public static class SettingsValidator
             {
                 HoldMilliseconds = Math.Clamp(confirmation.HoldMilliseconds, 500, 3000),
                 Phrase = string.IsNullOrWhiteSpace(confirmation.Phrase) ? "确认发送" : confirmation.Phrase.Trim(),
-                TimeoutSeconds = Math.Clamp(confirmation.TimeoutSeconds, 5, 30),
+                TimeoutSeconds = Math.Clamp(confirmation.TimeoutSeconds, 1, 30),
             },
             ShiftEnterPassThrough = true,
             LogRetentionDays = Math.Clamp(settings.LogRetentionDays, 1, 30),

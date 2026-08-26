@@ -18,10 +18,11 @@ public partial class App : System.Windows.Application
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "WeChatSendGuard",
             "settings.json");
+        var isFirstLaunch = !File.Exists(settingsPath);
         var settingsStore = new FileSettingsStore(settingsPath);
         var settings = await settingsStore.LoadAsync();
         _services = await AppServices.CreateAsync(settings, settingsStore);
-        _services.Start();
+        _services.Start(openSettingsOnStartup: isFirstLaunch);
     }
 
     protected override void OnExit(ExitEventArgs e)
