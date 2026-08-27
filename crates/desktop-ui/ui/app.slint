@@ -1,0 +1,1048 @@
+import { AboutSlint } from "std-widgets.slint";
+
+export struct ChatRow {
+    id: string,
+    display-name: string,
+    detail: string,
+    kind-label: string,
+    enabled: bool,
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 42px;
+    border-radius: 6px;
+    background: area.pressed ? #e8f8f0 : (root.selected ? #e8f8f0 : #00000000);
+    border-width: root.selected ? 1px : 0px;
+    border-color: #bbf7d0;
+
+    label-text := Text {
+        x: 14px;
+        y: 0px;
+        width: parent.width - 28px;
+        height: parent.height;
+        text: root.label;
+        color: root.selected ? #059b4c : #4b5563;
+        font-size: 14px;
+        font-weight: root.selected ? 700 : 400;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component AppButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> active: true;
+    callback clicked();
+
+    height: 32px;
+    min-width: 74px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.primary ? #07c160 : (root.danger ? #fecaca : #e2e8f0);
+    background: !root.active ? #f1f5f9 : (area.pressed ? (root.primary ? #059b4c : #f1f5f9) : (area.has-hover ? (root.primary ? #06ad56 : #f8fafc) : (root.primary ? #07c160 : #ffffff)));
+    opacity: root.active ? 1 : 0.45;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: root.primary ? #ffffff : (root.danger ? #b91c1c : #111827);
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        enabled: root.active;
+        clicked => { root.clicked(); }
+    }
+}
+
+component WindowControlButton inherits Rectangle {
+    in property <string> symbol;
+    in property <bool> close-action: false;
+    callback clicked();
+
+    width: 40px;
+    height: 40px;
+    background: area.pressed ? (root.close-action ? #dc2626 : #e2e8f0) : (area.has-hover ? (root.close-action ? #dc2626 : #f3f4f6) : #00000000);
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.symbol;
+        color: root.close-action && area.has-hover ? #ffffff : #4b5563;
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    area := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component InputField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> placeholder;
+    in property <bool> valid: true;
+    callback edited();
+
+    height: 34px;
+    border-radius: 6px;
+    border-width: root.valid ? 1px : 1.5px;
+    border-color: root.valid ? (input.has-focus ? #07c160 : #e2e8f0) : #dc2626;
+    background: #ffffff;
+    clip: true;
+
+    input := TextInput {
+        x: 10px;
+        y: 6px;
+        width: parent.width - 20px;
+        height: parent.height - 12px;
+        text <=> root.value;
+        color: #111827;
+        font-size: 13px;
+        edited => { root.edited(); }
+    }
+    public function focus-input() {
+        input.focus();
+    }
+    Text {
+        x: 10px;
+        y: 0px;
+        width: parent.width - 20px;
+        height: parent.height;
+        visible: root.value == "";
+        text: root.placeholder;
+        color: #9ca3af;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
+component ToggleLine inherits Rectangle {
+    in property <string> label;
+    in property <string> note;
+    in property <bool> checked;
+    callback toggled(bool);
+
+    height: root.note == "" ? 38px : 48px;
+    background: #00000000;
+
+    switch := Rectangle {
+        x: 0px;
+        y: (parent.height - 20px) / 2;
+        width: 36px;
+        height: 20px;
+        border-radius: 10px;
+        background: root.checked ? #07c160 : #cbd5e1;
+        handle := Rectangle {
+            x: root.checked ? 18px : 2px;
+            y: 2px;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: #ffffff;
+        }
+    }
+    Text {
+        x: 48px;
+        y: root.note == "" ? 0px : 4px;
+        width: parent.width - 48px;
+        height: 20px;
+        text: root.label;
+        color: #111827;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    Text {
+        x: 48px;
+        y: 25px;
+        width: parent.width - 48px;
+        height: 18px;
+        visible: root.note != "";
+        text: root.note;
+        color: #6b7280;
+        font-size: 11px;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+component ModeCard inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> selected;
+    in property <bool> warning;
+    callback clicked();
+
+    height: 76px;
+    border-radius: 8px;
+    border-width: root.selected ? 1.5px : 1px;
+    border-color: root.selected ? (root.warning ? #f59e0b : #86efac) : #e2e8f0;
+    background: root.selected ? (root.warning ? #fef3c7 : #e8f8f0) : #ffffff;
+
+    Text {
+        x: 12px;
+        y: 10px;
+        width: parent.width - 48px;
+        height: 22px;
+        text: root.title;
+        color: #111827;
+        font-size: 13px;
+        font-weight: 700;
+    }
+    Text {
+        x: 12px;
+        y: 35px;
+        width: parent.width - 48px;
+        height: 28px;
+        text: root.detail;
+        color: #6b7280;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+    indicator := Rectangle {
+        x: parent.width - 30px;
+        y: 28px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        border-width: 1.5px;
+        border-color: root.selected ? (root.warning ? #d97706 : #07c160) : #cbd5e1;
+        Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.selected ? (root.warning ? #d97706 : #07c160) : #00000000;
+        }
+    }
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ChatListItem inherits Rectangle {
+    in property <ChatRow> chat;
+    in property <bool> selected;
+    callback clicked(string);
+
+    height: 56px;
+    border-radius: 6px;
+    background: root.selected ? #e8f8f0 : (area.has-hover ? #f8fafc : #ffffff);
+    border-width: 1px;
+    border-color: root.selected ? #bbf7d0 : #e2e8f0;
+
+    badge := Rectangle {
+        x: 10px;
+        y: 16px;
+        width: 42px;
+        height: 24px;
+        border-radius: 12px;
+        background: root.chat.kind-label == "联系人" ? #dcfce7 : #e0f2fe;
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.chat.kind-label;
+            color: root.chat.kind-label == "联系人" ? #15803d : #0369a1;
+            font-size: 10px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Text {
+        x: 64px;
+        y: 8px;
+        width: parent.width - 82px;
+        height: 20px;
+        text: root.chat.display-name;
+        color: #111827;
+        font-size: 13px;
+        font-weight: 600;
+        overflow: elide;
+    }
+    Text {
+        x: 64px;
+        y: 30px;
+        width: parent.width - 82px;
+        height: 18px;
+        text: root.chat.detail;
+        color: #6b7280;
+        font-size: 11px;
+        overflow: elide;
+    }
+    area := TouchArea {
+        clicked => { root.clicked(root.chat.id); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "WeChatSendGuard";
+    width: 920px;
+    height: 580px;
+    no-frame: true;
+    resize-border-width: 8px;
+    background: #f6f8fa;
+    default-font-family: "Segoe UI, Microsoft YaHei UI, sans-serif";
+    default-font-size: 13px;
+
+    in-out property <int> active-page: 0;
+    in-out property <bool> protection-enabled: true;
+    in-out property <int> rule-mode: 0;
+    in-out property <[ChatRow]> active-chats;
+    in-out property <string> selected-chat-id: "";
+    in-out property <string> status-text: "正在检测微信...";
+    in-out property <bool> status-healthy: false;
+    in-out property <string> list-title: "需要二次确认的会话";
+    in-out property <string> list-description: "名单修改会立即生效";
+    in-out property <string> alias-text: "";
+    in-out property <string> hold-milliseconds: "800";
+    in-out property <string> confirmation-phrase: "确认发送";
+    in-out property <string> timeout-seconds: "10";
+    in-out property <int> confirmation-mode: 1;
+    in-out property <bool> intercept-keyboard-enter: true;
+    in-out property <bool> intercept-numpad-enter: true;
+    in-out property <int> unknown-context-behavior: 0;
+    in-out property <bool> start-with-windows: false;
+    in-out property <string> log-retention-days: "7";
+    in-out property <string> application-version: "";
+    in-out property <bool> has-unsaved-settings: false;
+    in-out property <string> save-status: "就绪";
+    in-out property <bool> save-status-error: false;
+
+    callback page-selected(int);
+    callback protection-toggled(bool);
+    callback rule-mode-selected(int);
+    callback add-current-chat();
+    callback remove-selected-chat();
+    callback import-list();
+    callback export-list();
+    callback chat-selected(string);
+    callback aliases-changed(string);
+    callback confirmation-mode-selected(int);
+    callback keyboard-enter-toggled(bool);
+    callback numpad-enter-toggled(bool);
+    callback unknown-context-selected(int);
+    callback startup-toggled(bool);
+    callback save-settings();
+    callback minimize-requested();
+    callback close-requested();
+    callback title-bar-pressed();
+    callback title-bar-moved();
+    callback confirmation-requested(string);
+    callback confirmation-cancel-requested();
+    callback about-slint-requested();
+    callback settings-dirty();
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #f6f8fa;
+        shadow := Rectangle {
+            x: 10px;
+            y: 12px;
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            background: #d8e0e8;
+            border-radius: 9px;
+        }
+        frame := Rectangle {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            background: #ffffff;
+            border-width: 1px;
+            border-color: #d6dee7;
+            border-radius: 8px;
+            clip: true;
+            HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            width: 220px;
+            background: #f5f7f9;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 10px;
+                    Image {
+                        width: 22px;
+                        height: 22px;
+                        source: @image-url("../assets/tray.svg");
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: "WeChatSendGuard";
+                        color: #111827;
+                        font-size: 15px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle { height: 8px; background: #00000000; }
+                NavItem {
+                    label: "守护名单";
+                    selected: root.active-page == 0;
+                    clicked => { root.active-page = 0; root.page-selected(0); }
+                }
+                NavItem {
+                    label: "确认与拦截";
+                    selected: root.active-page == 1;
+                    clicked => { root.active-page = 1; root.page-selected(1); }
+                }
+                NavItem {
+                    label: "通用设置";
+                    selected: root.active-page == 2;
+                    clicked => { root.active-page = 2; root.page-selected(2); }
+                }
+                Rectangle { vertical-stretch: 1; background: #00000000; }
+                Rectangle {
+                    height: 48px;
+                    border-radius: 8px;
+                    background: #ffffff;
+                    border-width: 1px;
+                    border-color: #e2e8f0;
+                    Rectangle {
+                        x: 12px;
+                        y: 20px;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.status-healthy ? #07c160 : #f59e0b;
+                    }
+                    Text {
+                        x: 30px;
+                        y: 0px;
+                        width: parent.width - 42px;
+                        height: parent.height;
+                        text: root.status-text;
+                        color: #6b7280;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            background: #ffffff;
+            VerticalLayout {
+                Rectangle {
+                    height: 40px;
+                    background: #ffffff;
+                    drag-area := TouchArea {
+                        width: parent.width - 80px;
+                        height: parent.height;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                root.title-bar-pressed();
+                            }
+                        }
+                        moved => {
+                            root.title-bar-moved();
+                        }
+                    }
+                    WindowControlButton {
+                        x: parent.width - 80px;
+                        y: 0px;
+                        symbol: "-";
+                        clicked => { root.minimize-requested(); }
+                    }
+                    WindowControlButton {
+                        x: parent.width - 40px;
+                        y: 0px;
+                        symbol: "X";
+                        close-action: true;
+                        clicked => { root.close-requested(); }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #ffffff;
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 12px;
+
+                if (root.active-page == 0) : Rectangle {
+                    vertical-stretch: 1;
+                    background: #00000000;
+                    VerticalLayout {
+                        spacing: 14px;
+                        HorizontalLayout {
+                            Text {
+                                text: "守护名单";
+                                color: #111827;
+                                font-size: 22px;
+                                font-weight: 700;
+                            }
+                            Rectangle { horizontal-stretch: 1; background: #00000000; }
+                            ToggleLine {
+                                width: 190px;
+                                label: "启用发送保护守护";
+                                checked: root.protection-enabled;
+                                toggled(value) => { root.protection-enabled = value; root.protection-toggled(value); }
+                            }
+                        }
+                        Text {
+                            height: 20px;
+                            text: "选择哪些会话在按下 Enter 后需要多一步确认。";
+                            color: #6b7280;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            ModeCard {
+                                horizontal-stretch: 1;
+                                title: "仅保护指定名单";
+                                detail: "名单内需要确认，名单外直接发送";
+                                selected: root.rule-mode == 0;
+                                warning: false;
+                                clicked => { root.rule-mode = 0; root.rule-mode-selected(0); }
+                            }
+                            ModeCard {
+                                horizontal-stretch: 1;
+                                title: "全局防护（白名单模式）";
+                                detail: "名单内免确认，其他受支持会话均需确认";
+                                selected: root.rule-mode == 1;
+                                warning: true;
+                                clicked => { root.rule-mode = 1; root.rule-mode-selected(1); }
+                            }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 10px;
+                                HorizontalLayout {
+                                    VerticalLayout {
+                                        spacing: 2px;
+                                        Text { text: root.list-title; color: #111827; font-size: 15px; font-weight: 700; }
+                                        Text { text: root.list-description; color: #6b7280; font-size: 11px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: #00000000; }
+                                    AppButton { width: 74px; label: "导入"; clicked => { root.import-list(); } }
+                                    AppButton { width: 74px; label: "导出"; clicked => { root.export-list(); } }
+                                    AppButton { width: 128px; label: "+ 加入当前微信会话"; primary: true; clicked => { root.add-current-chat(); } }
+                                }
+                                Flickable {
+                                    vertical-stretch: 1;
+                                    viewport-width: root.width - 264px;
+                                    viewport-height: 800px;
+                                    chat-column := VerticalLayout {
+                                        width: root.width - 264px;
+                                        spacing: 6px;
+                                        for chat in root.active-chats: ChatListItem {
+                                            chat: chat;
+                                            selected: root.selected-chat-id == chat.id;
+                                            clicked(id) => { root.selected-chat-id = id; root.chat-selected(id); }
+                                        }
+                                        Rectangle {
+                                            height: 72px;
+                                            visible: root.active-chats.length == 0;
+                                            background: #f8fafc;
+                                            border-radius: 6px;
+                                            Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: "暂无会话，请点击“+ 加入当前微信会话”";
+                                                color: #6b7280;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                                font-size: 12px;
+                                            }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    InputField {
+                                        horizontal-stretch: 1;
+                                        value <=> root.alias-text;
+                                        placeholder: "为选中的会话添加别名，使用 | 分隔";
+                                        edited => { root.aliases-changed(root.alias-text); }
+                                    }
+                                    AppButton { width: 104px; label: "移除选中项"; danger: true; active: root.selected-chat-id != ""; clicked => { root.remove-selected-chat(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (root.active-page == 1) : Rectangle {
+                    vertical-stretch: 1;
+                    background: #00000000;
+                    VerticalLayout {
+                        spacing: 14px;
+                        Text { text: "确认与拦截"; color: #111827; font-size: 22px; font-weight: 700; }
+                        Text { height: 20px; text: "二次确认只在规则命中时出现；Shift+Enter 始终放行。"; color: #6b7280; font-size: 12px; }
+                        Rectangle {
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 14px;
+                                Text { text: "确认方式"; color: #111827; font-size: 15px; font-weight: 700; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    AppButton { label: "长按确认"; primary: root.confirmation-mode == 1; clicked => { root.confirmation-mode = 1; root.confirmation-mode-selected(1); } }
+                                    AppButton { label: "单击确认"; primary: root.confirmation-mode == 0; clicked => { root.confirmation-mode = 0; root.confirmation-mode-selected(0); } }
+                                    AppButton { label: "输入确认词"; primary: root.confirmation-mode == 2; clicked => { root.confirmation-mode = 2; root.confirmation-mode-selected(2); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 5px;
+                                        Text { text: "长按时长（毫秒）"; color: #4b5563; font-size: 12px; }
+                                        InputField { value <=> root.hold-milliseconds; placeholder: "800"; edited => { root.settings-dirty(); } }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 5px;
+                                        Text { text: "确认词"; color: #4b5563; font-size: 12px; }
+                                        InputField { value <=> root.confirmation-phrase; placeholder: "确认发送"; edited => { root.settings-dirty(); } }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 5px;
+                                        Text { text: "自动取消（秒）"; color: #4b5563; font-size: 12px; }
+                                        InputField { value <=> root.timeout-seconds; placeholder: "10"; edited => { root.settings-dirty(); } }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 6px;
+                                Text { text: "输入策略"; color: #111827; font-size: 15px; font-weight: 700; }
+                                ToggleLine {
+                                    label: "拦截主键盘 Enter";
+                                    note: "关闭后，不会处理任何 Enter 发送。";
+                                    checked: root.intercept-keyboard-enter;
+                                    toggled(value) => { root.intercept-keyboard-enter = value; root.keyboard-enter-toggled(value); }
+                                }
+                                ToggleLine {
+                                    label: "拦截数字键盘 Enter";
+                                    note: "主键盘 Enter 启用时可单独关闭。";
+                                    checked: root.intercept-numpad-enter;
+                                    toggled(value) => { root.intercept-numpad-enter = value; root.numpad-enter-toggled(value); }
+                                }
+                                Text { height: 20px; text: "Shift+Enter 与输入法候选确认始终放行。"; color: #6b7280; font-size: 11px; }
+                            }
+                        }
+                    }
+                }
+
+                if (root.active-page == 2) : Rectangle {
+                    vertical-stretch: 1;
+                    background: #00000000;
+                    VerticalLayout {
+                        spacing: 14px;
+                        Text { text: "通用设置"; color: #111827; font-size: 22px; font-weight: 700; }
+                        Text { height: 20px; text: "所有设置保存在当前 Windows 用户目录，不需要管理员权限。"; color: #6b7280; font-size: 12px; }
+                        Rectangle {
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+                                Text { text: "未知会话处理"; color: #111827; font-size: 15px; font-weight: 700; }
+                                HorizontalLayout {
+                                    AppButton { label: "要求确认"; primary: root.unknown-context-behavior == 0; clicked => { root.unknown-context-behavior = 0; root.unknown-context-selected(0); } }
+                                    AppButton { label: "阻止发送"; primary: root.unknown-context-behavior == 1; clicked => { root.unknown-context-behavior = 1; root.unknown-context-selected(1); } }
+                                }
+                                Text { height: 20px; text: "无法可靠识别当前会话时，绝不会直接注入发送按键。"; color: #6b7280; font-size: 11px; }
+                            }
+                        }
+                        Rectangle {
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 8px;
+                                ToggleLine {
+                                    label: "随 Windows 启动";
+                                    note: "使用当前用户的启动项；不会请求管理员权限。";
+                                    checked: root.start-with-windows;
+                                    toggled(value) => { root.start-with-windows = value; root.startup-toggled(value); }
+                                }
+                                HorizontalLayout {
+                                    Text { width: 110px; text: "日志保留天数"; color: #111827; font-size: 13px; vertical-alignment: center; }
+                                    InputField { width: 110px; value <=> root.log-retention-days; placeholder: "7"; edited => { root.settings-dirty(); } }
+                                    Text { text: "仅保留最小诊断信息，不包含消息内容或会话名称。"; color: #6b7280; font-size: 11px; vertical-alignment: center; }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: "WeChatSendGuard " + root.application-version + " · 界面由 Slint 构建";
+                                        color: #94a3b8;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                    AppButton {
+                                        width: 88px;
+                                        label: "关于 Slint";
+                                        clicked => { root.about-slint-requested(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 48px;
+                    border-radius: 8px;
+                    background: root.save-status-error ? #fee2e2 : #f8fafc;
+                    border-width: 1px;
+                    border-color: root.save-status-error ? #fecaca : #e2e8f0;
+                    Text {
+                        x: 14px;
+                        y: 0px;
+                        width: parent.width - 150px;
+                        height: parent.height;
+                        text: root.save-status;
+                        color: root.save-status-error ? #b91c1c : #6b7280;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    save := AppButton {
+                        x: parent.width - 122px;
+                        y: 8px;
+                        width: 108px;
+                        label: "保存设置";
+                        primary: true;
+                        clicked => { root.save-settings(); }
+                    }
+                }
+            }
+        }
+    }
+}
+}
+        }
+}
+}
+
+export component SlintAboutWindow inherits Window {
+    title: "关于 Slint";
+    width: 340px;
+    height: 160px;
+    background: #ffffff;
+
+    AboutSlint {
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+export component ConfirmationWindow inherits Window {
+    title: "发送确认";
+    width: 460px;
+    height: 268px + (root.draft-preview != "" ? 54px : 0px) + (root.confirmation-mode == 2 ? 40px : 0px);
+    no-frame: true;
+    always-on-top: true;
+    background: #f6f8fa;
+    default-font-family: "Segoe UI, Microsoft YaHei UI, sans-serif";
+    default-font-size: 13px;
+
+    in-out property <string> target-kind: "群聊";
+    in-out property <string> target-name: "当前会话";
+    in-out property <string> draft-preview: "";
+    in-out property <int> confirmation-mode: 1;
+    in-out property <int> hold-milliseconds: 800;
+    in-out property <string> required-phrase: "确认发送";
+    in-out property <string> phrase-value: "";
+    in-out property <string> confirm-label: "按住确认 (0.8s)";
+    in-out property <float> hold-progress: 0;
+    in-out property <float> countdown-progress: 100;
+    in-out property <string> countdown-text: "10.0 秒后自动取消";
+    out property <bool> hold-pressed: hold-area.pressed;
+    callback confirmed();
+    callback cancelled();
+    callback focus-default();
+
+    forward-focus: keyboard-focus;
+
+    keyboard-focus := FocusScope {
+        x: 14px;
+        y: 14px;
+        width: parent.width - 28px;
+        height: parent.height - 28px;
+        capture-key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                accept
+            } else {
+                reject
+            }
+        }
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #ffffff;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            border-radius: 12px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                alignment: start;
+                Rectangle {
+                    height: 20px;
+                    background: #00000000;
+                    Text {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width - 76px;
+                        height: parent.height;
+                        text: "发送前确认";
+                        color: #111827;
+                        font-size: 15px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        x: parent.width - 62px;
+                        y: 0px;
+                        width: 62px;
+                        height: 20px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: #e2e8f0;
+                        background: #f3f4f6;
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: "Esc 取消";
+                            color: #6b7280;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 60px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #bbf7d0;
+                    background: #e8f8f0;
+                    Rectangle {
+                        x: 12px;
+                        y: 20px;
+                        width: 42px;
+                        height: 20px;
+                        border-radius: 4px;
+                        background: root.target-kind == "联系人" ? #dcfce7 : #e0f2fe;
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.target-kind;
+                            color: root.target-kind == "联系人" ? #15803d : #0369a1;
+                            font-size: 10px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        x: 66px;
+                        y: 0px;
+                        width: parent.width - 80px;
+                        height: parent.height;
+                        text: root.target-name;
+                        color: #111827;
+                        font-size: 15px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                draft-container := Rectangle {
+                    height: root.draft-preview != "" ? 54px : 0px;
+                    visible: root.draft-preview != "";
+                    border-radius: 8px;
+                    background: #f8fafc;
+                    border-width: 1px;
+                    border-color: #e2e8f0;
+                    Text {
+                        x: 10px;
+                        y: 6px;
+                        width: parent.width - 20px;
+                        height: 14px;
+                        text: "待发送内容";
+                        color: #6b7280;
+                        font-size: 10px;
+                    }
+                    Text {
+                        x: 10px;
+                        y: 22px;
+                        width: parent.width - 20px;
+                        height: parent.height - 28px;
+                        text: root.draft-preview;
+                        color: #111827;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                    }
+                }
+                phrase-container := Rectangle {
+                    height: root.confirmation-mode == 2 ? 40px : 0px;
+                    visible: root.confirmation-mode == 2;
+                    phrase-field := InputField {
+                        width: parent.width;
+                        height: root.confirmation-mode == 2 ? 34px : 0px;
+                        value <=> root.phrase-value;
+                        placeholder: "输入“确认发送”后再确认";
+                    }
+                }
+                Rectangle {
+                    height: 4px;
+                    border-radius: 2px;
+                    background: #e2e8f0;
+                    Rectangle {
+                        x: 0px;
+                        width: parent.width * root.hold-progress;
+                        height: parent.height;
+                        border-radius: 2px;
+                        background: #07c160;
+                        visible: root.confirmation-mode == 1;
+                    }
+                }
+                Rectangle {
+                    height: 34px;
+                    background: #00000000;
+                    AppButton {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width / 2 - 5px;
+                        height: parent.height;
+                        label: "取消发送";
+                        clicked => { root.cancelled(); }
+                    }
+                    confirm-button := AppButton {
+                        x: parent.width / 2 + 5px;
+                        y: 0px;
+                        width: parent.width / 2 - 5px;
+                        height: parent.height;
+                        label: root.confirm-label;
+                        primary: true;
+                        active: root.confirmation-mode != 2 || root.phrase-value == root.required-phrase;
+                        clicked => { if root.confirmation-mode != 1 { root.confirmed(); } }
+                    }
+                    hold-area := TouchArea {
+                        x: confirm-button.x;
+                        y: confirm-button.y;
+                        width: confirm-button.width;
+                        height: confirm-button.height;
+                        enabled: root.confirmation-mode == 1;
+                    }
+                }
+                Rectangle {
+                    height: 2px;
+                    border-radius: 1px;
+                    background: #f1f5f9;
+                    Rectangle {
+                        x: 0px;
+                        width: parent.width * root.countdown-progress / 100.0;
+                        height: parent.height;
+                        border-radius: 1px;
+                        background: #f59e0b;
+                    }
+                }
+                Text {
+                    height: 18px;
+                    text: root.countdown-text;
+                    color: #6b7280;
+                    font-size: 11px;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+    }
+
+    focus-default => {
+        if (root.confirmation-mode == 2) {
+            phrase-field.focus-input();
+        } else {
+            keyboard-focus.focus();
+        }
+    }
+}
+
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/tray.svg");
+    tooltip: root.status-text;
+    title: "WeChatSendGuard";
+
+    in-out property <string> status-text: "状态：正在检测微信";
+    in-out property <bool> protection-enabled: true;
+    callback open-settings();
+    callback add-current-chat();
+    callback bypass-requested(int);
+    callback protection-toggled(bool);
+    callback show-status();
+    callback about-slint-requested();
+    callback exit-requested();
+
+    clicked => { root.open-settings(); }
+
+    Menu {
+        MenuItem { title: root.status-text; enabled: false; }
+        MenuSeparator { }
+        MenuItem { title: "打开主设置"; activated => { root.open-settings(); } }
+        MenuItem { title: "加入当前微信会话"; activated => { root.add-current-chat(); } }
+        Menu {
+            title: "临时放行当前会话";
+            MenuItem { title: "临时放行 1 分钟"; activated => { root.bypass-requested(1); } }
+            MenuItem { title: "临时放行 5 分钟"; activated => { root.bypass-requested(5); } }
+            MenuItem { title: "临时放行 15 分钟"; activated => { root.bypass-requested(15); } }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: root.protection-enabled ? "发送守护：已启用" : "发送守护：已暂停";
+            enabled: false;
+        }
+        MenuItem {
+            title: root.protection-enabled ? "暂停发送守护" : "启用发送守护";
+            activated => { root.protection-toggled(!root.protection-enabled); }
+        }
+        MenuItem { title: "查看当前状态"; activated => { root.show-status(); } }
+        MenuItem { title: "关于 Slint"; activated => { root.about-slint-requested(); } }
+        MenuSeparator { }
+        MenuItem { title: "退出 WeChatSendGuard"; activated => { root.exit-requested(); } }
+    }
+}

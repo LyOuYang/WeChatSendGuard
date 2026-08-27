@@ -1,0 +1,15 @@
+[package]
+name = "wechat-send-guard-platform-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Windows-specific platform adapter for WeChatSendGuard."
+
+[dependencies]
+serde_json.workspace = true
+uuid.workspace = true
+wechat-send-guard-core = { path = "../guard-core" }
+wechat-send-guard-platform-api = { path = "../platform-api" }
+windows.workspace = true

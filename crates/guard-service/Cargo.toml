@@ -1,0 +1,13 @@
+[package]
+name = "wechat-send-guard-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Application orchestration for WeChatSendGuard without UI or OS dependencies."
+
+[dependencies]
+wechat-send-guard-core = { path = "../guard-core" }
+wechat-send-guard-platform-api = { path = "../platform-api" }
+uuid.workspace = true

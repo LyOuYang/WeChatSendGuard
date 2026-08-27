@@ -11,3 +11,8 @@ TestResults/
 
 # Local publish artifacts
 publish/
+/.idea/
+
+# Rust build output
+/target/
+/dist/

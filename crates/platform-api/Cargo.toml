@@ -1,0 +1,11 @@
+[package]
+name = "wechat-send-guard-platform-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform contracts and safe test doubles for WeChatSendGuard."
+
+[dependencies]
+wechat-send-guard-core = { path = "../guard-core" }

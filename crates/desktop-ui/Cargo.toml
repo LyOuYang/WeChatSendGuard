@@ -1,0 +1,15 @@
+[package]
+name = "wechat-send-guard-desktop-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Slint desktop UI for WeChatSendGuard."
+build = "build.rs"
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build = "=1.17.1"

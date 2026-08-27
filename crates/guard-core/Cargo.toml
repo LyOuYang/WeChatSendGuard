@@ -1,0 +1,13 @@
+[package]
+name = "wechat-send-guard-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pure rules, configuration, and confirmation state for WeChatSendGuard."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

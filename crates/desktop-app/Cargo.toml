@@ -1,0 +1,23 @@
+[package]
+name = "wechat-send-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Native Windows desktop application for WeChatSendGuard."
+
+[[bin]]
+name = "WeChatSendGuard"
+path = "src/main.rs"
+
+[dependencies]
+slint.workspace = true
+raw-window-handle.workspace = true
+uuid.workspace = true
+windows.workspace = true
+wechat-send-guard-core = { path = "../guard-core" }
+wechat-send-guard-desktop-ui = { path = "../desktop-ui" }
+wechat-send-guard-platform-api = { path = "../platform-api" }
+wechat-send-guard-platform-windows = { path = "../platform-windows" }
+wechat-send-guard-service = { path = "../guard-service" }

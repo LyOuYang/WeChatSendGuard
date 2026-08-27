@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "protectedChats": [
+    {
+      "id": "c36c67d3-91a9-4513-a370-0dded5be63d5",
+      "displayName": "历史项目群",
+      "matchTitle": "历史项目群",
+      "aliases": [],
+      "enabled": true,
+      "targetKind": "Group"
+    }
+  ]
+}

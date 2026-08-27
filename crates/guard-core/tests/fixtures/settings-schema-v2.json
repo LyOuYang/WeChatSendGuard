@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "enabled": true,
+  "ruleMode": "ProtectListed",
+  "protectedChats": [
+    {
+      "id": "10b18220-d316-4b8f-9e45-f60a5cf613ee",
+      "displayName": "项目研发群",
+      "matchTitle": "项目研发群",
+      "aliases": ["项目 研发群"],
+      "enabled": true,
+      "targetKind": "Group"
+    }
+  ],
+  "exemptedChats": [
+    {
+      "id": "5be126c7-8fea-4f3b-a7c5-01ae528035d0",
+      "displayName": "小王",
+      "matchTitle": "小王",
+      "aliases": [],
+      "enabled": true,
+      "targetKind": "Contact"
+    }
+  ],
+  "confirmation": {
+    "mode": "Hold",
+    "holdMilliseconds": 800,
+    "phrase": "确认发送",
+    "timeoutSeconds": 10
+  },
+  "unknownContextBehavior": "Confirm",
+  "interceptNumpadEnter": true,
+  "interceptKeyboardEnter": true,
+  "shiftEnterPassThrough": true,
+  "startWithWindows": false,
+  "logRetentionDays": 7
+}
