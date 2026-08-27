@@ -1,47 +1,57 @@
-# Windows UI Parity Baseline
+# 界面与交互契约
 
-## Source of Truth
+## 基线与来源
 
-The existing WPF application is the Windows v1 visual and interaction baseline. This document freezes its user-visible contract for the Slint migration. When an older design note conflicts with the running WPF implementation, the running implementation wins.
+`crates/desktop-ui/ui/app.slint` 是 Windows `1.0.0` 及后续平台的可见界面基线。旧版 WPF 已不再是产品实现或参考来源；若旧文档与当前 Slint 视图冲突，以当前 Slint 视图和本文档为准。
 
-## Settings Window
+界面风格应保持克制、紧凑、偏工具化：微信绿只用于当前状态和主操作，页面不是营销页，不使用夸张动效或仅靠颜色传达关键信息。
 
-- Frameless compact desktop window with custom minimize and close controls.
-- Main window starts at 920 x 580 logical pixels, has an 8 px resize border, a draggable 40 px caption area, and an inset 8 px floating shell with a restrained border and shadow. Close hides to the tray; minimize uses the normal Windows minimized state and a tray click restores it.
-- Left navigation with `发送守护`, `规则名单`, and `系统设置` sections.
-- Top status area reports protection state and current Weixin recognition status before configuration detail.
-- Guard view includes enable switch, two rule-mode cards, active-mode list, aliases, add-current-session action, import/export, multi-select removal, and immediate-effect status messaging. The enable switch persists and takes effect immediately instead of entering the unsaved queue.
-- Rules view exposes confirmation mode, hold duration, phrase, timeout, main Enter, numpad Enter, and fixed Shift+Enter pass-through behavior.
-- System view exposes unknown-context behavior, start-with-Windows, and log-retention days.
-- List operations take effect immediately. Other changed controls, except the enable switch, show an unsaved state until the user selects the primary save command. The tray displays the current guard state and a matching `暂停` or `启用` action.
+## 主设置窗口
 
-## Confirmation Window
+- 无原生标题栏，初始逻辑尺寸为 `920 x 580`，8 px 可调整边缘，40 px 拖动区域。
+- 窗口采用内缩 8 px 的浮出式外壳、细边框和浅阴影；关闭隐藏到托盘，最小化使用正常 Windows 最小化状态。
+- 左侧导航固定为“守护名单”“确认与拦截”“通用设置”；底部显示微信识别与守护状态。
+- 点击托盘图标必须恢复同一个已最小化或已隐藏的设置窗口。
 
-- Separate compact window with target-kind badge, target name, optional ephemeral draft preview, and clear cancel-default behavior.
-- Frameless, always-on-top confirmation card starts at 460 px wide, is centered over the original trusted target window when its bounds are available, and presents an `Esc 取消` affordance without a native title bar.
-- `Escape` cancels and is consumed by the guard while confirmation is active, even if Windows has not yet transferred foreground focus. Phrase mode initially focuses the phrase input; other modes initially focus cancel.
-- Hold mode shows live progress, resets if the pointer leaves, and pauses/extends the cancellation countdown during a held attempt, matching current behavior.
-- A target change, process change, lost editor focus at final revalidation, cancellation, or timeout must never result in key injection.
+### 守护名单
 
-## Visual Tokens
+- 顶部开关“启用发送保护守护”立即保存并生效，不进入未保存队列。
+- 可在“仅保护指定名单”和“全局防护（白名单）”之间切换；两种模式保留各自独立的名单。
+- 加入当前会话、移除、导入、导出及名单模式切换即时生效；会话显示群聊/联系人标签、规范化标题和别名。
+- 无可识别微信上下文时，“加入当前微信会话”给出可理解的失败提示，不猜测聊天身份。
 
-| Token | Value |
+### 确认与拦截
+
+- 支持长按确认、单击确认和输入确认词；可配置长按时长、确认词、超时、主键盘 Enter 与数字键盘 Enter。
+- `Shift+Enter` 和输入法候选确认始终放行。
+- 非名单类设置在用户点击“保存设置”前显示未保存状态，且不改变当前运行中的规则。
+
+### 通用设置
+
+- “微信客户端与未知会话”区域始终自动展示默认路径 `C:\Program Files\Tencent\Weixin\Weixin.exe`。
+- 用户可编辑为其他绝对 `Weixin.exe` 路径，并可点击“恢复默认”；保存前不改变当前信任规则，保存成功后立即重新观察前台上下文。
+- 客户端路径或 UI Automation 控件不兼容时显示正常不可用状态，应用不会注入按键。
+- 可设置未知会话为“要求确认”或“阻止发送”，并配置当前用户启动项和日志保留天数。
+- 托盘菜单显示当前守护状态以及正确的下一步操作“暂停发送守护”或“启用发送守护”。
+
+## 确认窗口
+
+- 独立、无标题栏、始终置顶的确认卡片，基础宽度为 460 px；显示会话类型、目标名称、可选的内存草稿预览、取消与确认操作。
+- 有原始目标窗口边界时，确认窗居中于该窗口；显示后尽力获取焦点。
+- Esc、取消按钮、长按提前释放、指针离开、超时、目标变化、进程变化和编辑框焦点丢失均只会取消，绝不发送按键。
+- 只要存在待确认请求，Esc 必须由守护进程消耗，即使确认窗尚未成为前台窗口也不能让 Esc 传到微信。
+- 长按进度需要实时呈现；按住期间取消倒计时按当前产品规则暂停或延展。
+
+## 视觉标记
+
+| 名称 | 值 |
 | --- | --- |
-| Window background | `#FFFFFF` |
-| Sidebar background | `#F5F7F9` |
-| Ink | `#111827` |
-| Muted text | `#6B7280` |
-| Border | `#E2E8F0` |
-| Weixin green | `#07C160` |
-| Green hover | `#06AD56` |
-| Green pressed | `#059B4C` |
-| Soft green | `#E8F8F0` |
-| Warning | `#D97706` |
-| Warning soft | `#FEF3C7` |
-| Danger | `#DC2626` |
+| 窗口与内容底色 | `#FFFFFF` / `#F6F8FA` |
+| 侧栏底色 | `#F5F7F9` |
+| 主文字 / 辅助文字 | `#111827` / `#6B7280` |
+| 边框 | `#E2E8F0` |
+| 微信绿 / 悬停 / 按下 | `#07C160` / `#06AD56` / `#059B4C` |
+| 浅绿色状态面 | `#E8F8F0` |
+| 提醒 / 错误 | `#D97706` / `#DC2626` |
 
-Use `Segoe UI`, `Microsoft YaHei UI`, `PingFang SC`, and the system sans-serif fallback chain. Cards use 8 px corners; ordinary controls use 6 px corners; primary controls are compact rather than marketing-style. The interface must stay quiet, dense, and work-focused.
-
-## Accessibility and Regression Checks
-
-The Slint implementation must preserve keyboard traversal, focus visibility, disabled states, text fit at 100% and 150% Windows scale, high-contrast legibility, and the cancellation-first confirmation flow. Screenshot comparisons are part of the UI review, but no screenshot or automation may inspect a real Weixin conversation.
+字体顺序为 `Segoe UI`、`Microsoft YaHei UI`、`PingFang SC`、系统无衬线字体。卡片圆角 8 px，普通控件圆角 6 px。所有文本应在 100% 和 150% Windows 缩放下保持完整可读；截图审核使用固定演示数据，不能显示真实聊天标题或草稿。

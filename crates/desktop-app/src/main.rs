@@ -30,10 +30,11 @@ use wechat_send_guard_desktop_ui::{
 };
 use wechat_send_guard_platform_api::{ChatContextProvider, StartupRegistration};
 use wechat_send_guard_platform_windows::{
-    KeyboardKey, WindowsAuditLog, WindowsContextMonitor, WindowsContextProvider,
-    WindowsInputInjector, WindowsKeyboardHook, WindowsStartupRegistration, activate_window,
-    center_popup_over_window, cursor_screen_position, default_audit_log_directory,
-    select_protected_chat_export, select_protected_chat_import,
+    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog, WindowsContextMonitor,
+    WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsStartupRegistration,
+    activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
+    is_valid_weixin_executable_path, path_matches_trusted_weixin, select_protected_chat_export,
+    select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
 
@@ -65,6 +66,8 @@ impl Controller {
             .save(settings.clone())
             .map_err(|error| format!("无法保存设置：{error}"))?;
 
+        self.provider
+            .set_trusted_weixin_executable_path(settings.trusted_weixin_executable_path.as_deref());
         self.service.update_settings(settings.clone());
         self.audit.set_retention_days(settings.log_retention_days);
         self.settings = settings.clone();
@@ -143,7 +146,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let store = FileSettingsStore::new(settings_path);
     let settings = store.load()?.sanitize();
 
-    let provider = Arc::new(WindowsContextProvider::new());
+    let provider = Arc::new(
+        WindowsContextProvider::new_with_trusted_weixin_executable_path(
+            settings.trusted_weixin_executable_path.as_deref(),
+        ),
+    );
     let audit = Arc::new(WindowsAuditLog::new(
         default_audit_log_directory(&local_app_data),
         settings.log_retention_days,
@@ -508,6 +515,15 @@ fn bind_window_callbacks(
         let main_window_weak = main_window_weak.clone();
         move |_| mark_unsaved(&main_window_weak)
     });
+    main_window.on_reset_weixin_executable_path({
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            if let Some(window) = main_window_weak.upgrade() {
+                window.set_weixin_executable_path(TRUSTED_WEIXIN_PATH.into());
+                mark_unsaved(&main_window_weak);
+            }
+        }
+    });
 
     main_window.on_rule_mode_selected({
         let controller = Rc::clone(&controller);
@@ -871,6 +887,13 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
     window.set_unknown_context_behavior(unknown_behavior_to_ui(settings.unknown_context_behavior));
     window.set_start_with_windows(settings.start_with_windows);
     window.set_log_retention_days(settings.log_retention_days.to_string().into());
+    window.set_weixin_executable_path(
+        settings
+            .trusted_weixin_executable_path
+            .as_deref()
+            .unwrap_or(TRUSTED_WEIXIN_PATH)
+            .into(),
+    );
     window.set_has_unsaved_settings(false);
     render_chat_list(window, settings, selected_chat_id);
 }
@@ -960,6 +983,8 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
     settings.start_with_windows = window.get_start_with_windows();
     settings.log_retention_days =
         parse_bounded_u32(&window.get_log_retention_days(), 1, 30, "日志保留天数")?;
+    settings.trusted_weixin_executable_path =
+        weixin_executable_path_override_from_form(&window.get_weixin_executable_path())?;
     update_selected_aliases(
         &mut settings,
         &window.get_selected_chat_id(),
@@ -1431,6 +1456,23 @@ fn update_selected_aliases(settings: &mut AppSettings, selected_id: &str, aliase
     }
 }
 
+fn weixin_executable_path_override_from_form(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim().trim_matches('"').trim();
+    if value.is_empty() {
+        return Err("微信客户端路径不能为空；如需使用默认安装位置，请点击“恢复默认”。".to_owned());
+    }
+
+    if !is_valid_weixin_executable_path(value) {
+        return Err("微信客户端路径必须是绝对路径，且必须指向 Weixin.exe。".to_owned());
+    }
+
+    if path_matches_trusted_weixin(value) {
+        Ok(None)
+    } else {
+        Ok(Some(value.to_owned()))
+    }
+}
+
 fn parse_bounded_u32(value: &str, minimum: u32, maximum: u32, label: &str) -> Result<u32, String> {
     let parsed = value
         .trim()
@@ -1542,7 +1584,7 @@ const fn unknown_behavior_from_ui(behavior: i32) -> Option<UnknownContextBehavio
 mod tests {
     use super::{
         is_background_start_argument, parse_bounded_u32, status_for_context,
-        window_position_for_cursor_drag,
+        weixin_executable_path_override_from_form, window_position_for_cursor_drag,
     };
     use slint::PhysicalPosition;
     use wechat_send_guard_core::{AppSettings, ChatContext};
@@ -1552,6 +1594,22 @@ mod tests {
         assert_eq!(parse_bounded_u32("800", 500, 3_000, "长按时长"), Ok(800));
         assert!(parse_bounded_u32("499", 500, 3_000, "长按时长").is_err());
         assert!(parse_bounded_u32("eight", 500, 3_000, "长按时长").is_err());
+    }
+
+    #[test]
+    fn weixin_executable_path_uses_default_only_when_it_matches_the_supported_path() {
+        assert_eq!(
+            weixin_executable_path_override_from_form(
+                r"c:/PROGRAM FILES/Tencent/Weixin/Weixin.exe"
+            ),
+            Ok(None)
+        );
+        assert_eq!(
+            weixin_executable_path_override_from_form(r"D:\Apps\Weixin\Weixin.exe"),
+            Ok(Some(r"D:\Apps\Weixin\Weixin.exe".to_owned()))
+        );
+        assert!(weixin_executable_path_override_from_form(r"Weixin.exe").is_err());
+        assert!(weixin_executable_path_override_from_form(r"D:\Apps\Weixin\other.exe").is_err());
     }
 
     #[test]

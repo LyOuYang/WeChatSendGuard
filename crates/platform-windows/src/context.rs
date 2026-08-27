@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::{
         Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +27,10 @@ use windows::Win32::{
     },
 };
 
-use crate::trust::{ProcessTrust, assess_window_trust};
+use crate::trust::{
+    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust_for_executable,
+    is_valid_weixin_executable_path,
+};
 
 const INPUT_AUTOMATION_ID: &str = "chat_input_field";
 const CHAT_NAME_AUTOMATION_ID: &str = "current_chat_name_label";
@@ -37,26 +41,73 @@ const FOCUS_RECOVERY_RETRY: Duration = Duration::from_millis(30);
 
 /// Cached foreground-context provider. Constructing it only allocates an in-memory snapshot;
 /// use `refresh_now` or `WindowsContextMonitor::start` to request Windows metadata.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct WindowsContextProvider {
     current: RwLock<ChatContext>,
+    trusted_executable: RwLock<TrustedExecutable>,
+}
+
+#[derive(Debug, Clone)]
+struct TrustedExecutable {
+    path: Option<PathBuf>,
+    generation: u64,
+}
+
+impl Default for WindowsContextProvider {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WindowsContextProvider {
     pub fn new() -> Self {
-        Self::default()
+        Self::new_with_trusted_weixin_executable_path(None)
+    }
+
+    /// Creates a provider with the optional per-user Windows path override. `None` uses the
+    /// supported installation path and an invalid configured value cannot match a process.
+    pub fn new_with_trusted_weixin_executable_path(configured_path: Option<&str>) -> Self {
+        Self {
+            current: RwLock::new(ChatContext::default()),
+            trusted_executable: RwLock::new(TrustedExecutable {
+                path: resolved_trusted_weixin_path(configured_path),
+                generation: 0,
+            }),
+        }
+    }
+
+    /// Changes the exact executable identity used for future observations. The existing cached
+    /// context is invalidated before a fresh observation so an older trusted snapshot cannot
+    /// authorize a key after this setting changes.
+    pub fn set_trusted_weixin_executable_path(&self, configured_path: Option<&str>) {
+        let generation = {
+            let mut trusted = write_unpoisoned(&self.trusted_executable);
+            trusted.path = resolved_trusted_weixin_path(configured_path);
+            trusted.generation = trusted.generation.saturating_add(1);
+            trusted.generation
+        };
+
+        self.publish(ChatContext::default(), generation);
+        let _ = self.refresh_foreground();
     }
 
     pub fn refresh_foreground(&self) -> ChatContext {
         // SAFETY: GetForegroundWindow has no borrowed inputs and returns an owned value handle.
         let window_handle = unsafe { GetForegroundWindow().0 as isize };
         let observed_at = SystemTime::now();
-        let trust = assess_window_trust(window_handle).unwrap_or_else(|_| ProcessTrust {
-            process_id: 0,
-            process_path: String::new(),
-            is_trusted_weixin: false,
-            requires_elevation: false,
-        });
+        let (trusted_path, trust_generation) = {
+            let trusted = read_unpoisoned(&self.trusted_executable);
+            (trusted.path.clone(), trusted.generation)
+        };
+        let trust = trusted_path
+            .as_deref()
+            .and_then(|path| assess_window_trust_for_executable(window_handle, path).ok())
+            .unwrap_or_else(|| ProcessTrust {
+                process_id: 0,
+                process_path: String::new(),
+                is_trusted_weixin: false,
+                requires_elevation: false,
+            });
 
         let candidate = if !trust.is_trusted_weixin {
             context_from_trust(window_handle, trust, observed_at)
@@ -64,10 +115,14 @@ impl WindowsContextProvider {
             inspect_supported_weixin_window(window_handle, trust.clone(), observed_at)
                 .unwrap_or_else(|_| context_from_trust(window_handle, trust, observed_at))
         };
-        self.publish(candidate)
+        self.publish(candidate, trust_generation)
     }
 
-    fn publish(&self, mut candidate: ChatContext) -> ChatContext {
+    fn publish(&self, mut candidate: ChatContext, trust_generation: u64) -> ChatContext {
+        let trusted = read_unpoisoned(&self.trusted_executable);
+        if trusted.generation != trust_generation {
+            return read_unpoisoned(&self.current).clone();
+        }
         let mut current = write_unpoisoned(&self.current);
         candidate.generation = if same_observation(&current, &candidate) {
             current.generation
@@ -128,6 +183,16 @@ impl WindowsContextProvider {
             };
             Ok(read_draft_preview(&editor))
         })
+    }
+}
+
+fn resolved_trusted_weixin_path(configured_path: Option<&str>) -> Option<PathBuf> {
+    match configured_path {
+        None => Some(PathBuf::from(TRUSTED_WEIXIN_PATH)),
+        Some(value) => {
+            let path = PathBuf::from(value.trim().trim_matches('"').trim());
+            is_valid_weixin_executable_path(&path).then_some(path)
+        }
     }
 }
 
@@ -530,7 +595,8 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_draft_preview;
+    use super::{TRUSTED_WEIXIN_PATH, normalize_draft_preview, resolved_trusted_weixin_path};
+    use std::path::PathBuf;
 
     #[test]
     fn draft_preview_is_trimmed_bounded_and_ephemeral_without_uia() {
@@ -543,5 +609,18 @@ mod tests {
             normalize_draft_preview("a".repeat(241)),
             Some(format!("{}...", "a".repeat(240)))
         );
+    }
+
+    #[test]
+    fn invalid_external_path_override_disables_trust_instead_of_falling_back() {
+        assert_eq!(
+            resolved_trusted_weixin_path(None),
+            Some(PathBuf::from(TRUSTED_WEIXIN_PATH))
+        );
+        assert_eq!(
+            resolved_trusted_weixin_path(Some(r"D:\Apps\Weixin\other.exe")),
+            None
+        );
+        assert_eq!(resolved_trusted_weixin_path(Some("Weixin.exe")), None);
     }
 }

@@ -316,6 +316,7 @@ export component AppWindow inherits Window {
     in-out property <int> unknown-context-behavior: 0;
     in-out property <bool> start-with-windows: false;
     in-out property <string> log-retention-days: "7";
+    in-out property <string> weixin-executable-path: "";
     in-out property <string> application-version: "";
     in-out property <bool> has-unsaved-settings: false;
     in-out property <string> save-status: "就绪";
@@ -335,6 +336,7 @@ export component AppWindow inherits Window {
     callback numpad-enter-toggled(bool);
     callback unknown-context-selected(int);
     callback startup-toggled(bool);
+    callback reset-weixin-executable-path();
     callback save-settings();
     callback minimize-requested();
     callback close-requested();
@@ -664,7 +666,7 @@ export component AppWindow inherits Window {
                     vertical-stretch: 1;
                     background: #00000000;
                     VerticalLayout {
-                        spacing: 14px;
+                        spacing: 10px;
                         Text { text: "通用设置"; color: #111827; font-size: 22px; font-weight: 700; }
                         Text { height: 20px; text: "所有设置保存在当前 Windows 用户目录，不需要管理员权限。"; color: #6b7280; font-size: 12px; }
                         Rectangle {
@@ -673,14 +675,34 @@ export component AppWindow inherits Window {
                             border-color: #e2e8f0;
                             background: #ffffff;
                             VerticalLayout {
-                                padding: 16px;
-                                spacing: 12px;
-                                Text { text: "未知会话处理"; color: #111827; font-size: 15px; font-weight: 700; }
+                                padding: 14px;
+                                spacing: 8px;
+                                Text { text: "微信客户端与未知会话"; color: #111827; font-size: 15px; font-weight: 700; }
                                 HorizontalLayout {
+                                    InputField {
+                                        horizontal-stretch: 1;
+                                        value <=> root.weixin-executable-path;
+                                        placeholder: "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe";
+                                        edited => { root.settings-dirty(); }
+                                    }
+                                    AppButton {
+                                        width: 88px;
+                                        label: "恢复默认";
+                                        clicked => { root.reset-weixin-executable-path(); }
+                                    }
+                                }
+                                Text {
+                                    height: 18px;
+                                    text: "默认路径已自动填入；客户端版本或 UI Automation 控件不兼容时，应用不会注入按键。";
+                                    color: #6b7280;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    Text { width: 96px; text: "未知会话处理"; color: #4b5563; font-size: 12px; vertical-alignment: center; }
                                     AppButton { label: "要求确认"; primary: root.unknown-context-behavior == 0; clicked => { root.unknown-context-behavior = 0; root.unknown-context-selected(0); } }
                                     AppButton { label: "阻止发送"; primary: root.unknown-context-behavior == 1; clicked => { root.unknown-context-behavior = 1; root.unknown-context-selected(1); } }
                                 }
-                                Text { height: 20px; text: "无法可靠识别当前会话时，绝不会直接注入发送按键。"; color: #6b7280; font-size: 11px; }
                             }
                         }
                         Rectangle {

@@ -36,7 +36,8 @@ pub use input::WindowsInputInjector;
 pub use startup::WindowsStartupRegistration;
 #[cfg(windows)]
 pub use trust::{
-    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust, path_matches_trusted_weixin,
+    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust, is_valid_weixin_executable_path,
+    path_matches_trusted_weixin,
 };
 #[cfg(windows)]
 pub use window_placement::{activate_window, center_popup_over_window, cursor_screen_position};

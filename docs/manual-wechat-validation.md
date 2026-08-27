@@ -1,40 +1,41 @@
-# Manual Weixin Validation
+# 人工微信验证清单
 
-## Preconditions
+## 前置条件
 
-- Use a dedicated test account and a private test group or saved-message target with no unintended recipients.
-- Record Windows version, Weixin version, application version, installer hash, and test date.
-- Start from a fresh application launch after installing the candidate package.
-- Do not run automated test tooling while this checklist is being performed.
+- 使用专用测试账号和没有无关收件人的私有测试群或收藏/文件传输目标。
+- 记录 Windows 版本、微信版本、应用版本、安装包 SHA-256、测试日期和测试人。
+- 安装候选包后从全新应用启动开始验证。
+- 验证期间不运行任何可能操作真实微信的自动化工具。
 
-## Settings and Tray
+## 设置与托盘
 
-1. Verify first launch opens the settings window and `--silent` starts in the tray.
-2. Verify protected-list and exemption-list modes retain independent lists when switching modes.
-3. Add a current group and a current contact manually; verify their target-kind badges and aliases.
-4. Change a non-list setting, close settings without saving, reopen it, and verify the prior active setting remains. Save it and verify persistence after restart.
-5. Toggle protection from both the main switch and the tray. Verify it takes effect without selecting Save, remains correct after restart, and the tray shows both the current state and the next action (`暂停` or `启用`).
-6. Minimize the settings window, click the tray icon, and verify the existing settings window is restored rather than remaining minimized.
-7. Toggle temporary bypass from the tray. Verify bypass choices are unavailable or rejected outside protected-list mode.
+1. 验证首次启动打开设置窗口，`--silent` 在托盘启动。
+2. 在名单模式和白名单模式之间切换，验证二者保留独立名单。
+3. 人工加入一个群聊和一个联系人，验证类型标签与别名。
+4. 修改非名单设置后不保存就关闭并重开，验证旧生效值未变；保存后重启，验证新值已持久化。
+5. 检查默认微信路径自动显示为 `C:\Program Files\Tencent\Weixin\Weixin.exe`。在可控测试环境中保存一个实际的其他本地 `Weixin.exe` 路径，再恢复默认，验证每次保存后状态重新观察且错误路径不会导致输入注入。
+6. 分别从主开关和托盘切换守护，验证无需点击保存立即生效、重启后保持正确，托盘同时显示当前状态和下一步“暂停”或“启用”。
+7. 最小化设置窗口后点击托盘图标，验证原窗口被恢复而不是继续最小化。
+8. 从托盘设置临时放行，验证在非“仅保护指定名单”模式下不可用或被拒绝。
 
-## Sending Protection
+## 发送保护
 
-1. Focus a protected group editor with a harmless unsent draft. Press main `Enter`; verify the draft remains unsent, a confirmation opens centered over the Weixin window, and the confirmation receives focus.
-2. Repeat with numpad `Enter` when enabled, then disable it and verify it passes through according to the client behavior.
-3. Verify `Shift+Enter` and IME candidate confirmation do not open the guard dialog.
-4. In hold mode, release early, leave the button, press Escape, click cancel, and let the timeout expire. Each case must leave the draft unsent; Escape must close the confirmation instead of affecting or minimizing Weixin.
-5. Complete a hold. Verify the dialog closes, the original editor is still the target, and exactly one message is sent.
-6. While the dialog is visible, switch to a different chat or window, then confirm. Verify no message is injected.
-7. Verify click and phrase modes, including phrase mismatch and phrase-enter confirmation.
-8. Verify unknown or incompatible chat context follows the configured safe behavior and never injects when identity cannot be revalidated.
+1. 在受保护群聊编辑框中输入无害且不发送的草稿，按主键盘 Enter；验证草稿未发送、确认窗居中于微信窗口并尝试获得焦点。
+2. 在启用数字键盘 Enter 时重复验证；关闭后按客户端正常行为确认其放行。
+3. 验证 `Shift+Enter` 和输入法候选确认不会弹出守护确认窗。
+4. 在长按模式中分别提前松开、移出按钮、按 Esc、点击取消和等待超时；每种情况草稿均不得发送，Esc 必须取消确认窗而不能影响或最小化微信。
+5. 完成长按，验证确认窗关闭、原编辑框仍是目标，并且只发送一条消息。
+6. 确认窗显示时切换到其他聊天或其他窗口后再确认，验证绝不注入消息。
+7. 验证单击和确认词模式，包括确认词不匹配和按 Enter 确认。
+8. 验证未知或不兼容上下文遵从安全配置，身份无法重新校验时绝不注入。
 
-## Privacy and Recovery
+## 隐私与恢复
 
-1. Inspect settings and audit files. Confirm no draft text or chat title appears in audit lines.
-2. Close Weixin, restart the application, and verify the tray reports unavailable rather than failing or affecting unrelated apps.
-3. Test the candidate when Weixin is elevated and the guard is not. Verify it fails closed and communicates that it cannot protect the client.
-4. Uninstall and reinstall an upgrade candidate. Verify `%LocalAppData%\\WeChatSendGuard` settings and logs are preserved unless the user explicitly removes them.
+1. 检查设置和审计文件，确认审计行不包含草稿文本或聊天标题。
+2. 关闭微信后重启应用，验证托盘显示不可用，不影响无关应用。
+3. 让微信以更高权限运行而守护不提升，验证失败关闭并能表达无法保护的状态。
+4. 卸载后安装升级候选包，验证 `%LocalAppData%\WeChatSendGuard` 设置和日志仍在，除非用户明确删除。
 
-## Sign-off Record
+## 签核
 
-Store the completed checklist with the release record. Any failed or skipped row blocks a compatibility claim for that version.
+将完成的清单和所有失败或跳过项归档到发布记录。任一失败或跳过项都不能用于声明该版本的微信兼容性。

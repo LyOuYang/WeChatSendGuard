@@ -291,6 +291,7 @@ fn schema_v2_fixture_from_the_dotnet_contract_loads_without_loss() {
     assert_eq!(settings.protected_chats[0].aliases, ["项目 研发群"]);
     assert_eq!(settings.exempted_chats.len(), 1);
     assert_eq!(settings.confirmation.phrase, "确认发送");
+    assert_eq!(settings.trusted_weixin_executable_path, None);
 }
 
 #[test]

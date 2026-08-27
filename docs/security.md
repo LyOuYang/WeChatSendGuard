@@ -1,10 +1,10 @@
-# Security and Privacy Boundaries
+# 安全与隐私边界
 
-- The application observes only the foreground target client and only the accessibility metadata needed for title, target kind, and editor focus.
-- Trust is based on a deterministic target-client identity, not a broad process-name match.
-- A failed lookup, stale element, elevation mismatch, unsupported client layout, or revalidation mismatch cannot inject a send key.
-- Synthetic input is marker-tagged so the hook does not process its own event as physical input.
-- A draft preview is optional, in-memory, and scoped to one confirmation window. It is never persisted or logged.
-- Audit records are deliberately minimal and have bounded retention.
-- Settings and audit data remain in the current user's local application-data directory.
-- The application does not use a network service, telemetry pipeline, client database access, code injection, screen capture, clipboard capture, or remote control.
+- 应用只观察前台受信任目标客户端，并只读取识别会话标题、会话类型和编辑框焦点所需的公开无障碍元数据。
+- 信任基于确定性的目标客户端身份，不基于宽泛的进程名匹配。Windows `1.0.0` 使用默认或用户保存的精确 `Weixin.exe` 路径。
+- 路径不匹配、查询失败、UI 元素过期、权限级别不一致、客户端界面不兼容或重新校验不一致时，应用绝不注入发送键。
+- 合成输入使用标记，键盘钩子不会把自身的注入事件当作物理输入再次处理。
+- 草稿预览是可选的、仅在内存中存在，并且只属于一个确认窗口；不会持久化或写入日志。
+- 审计记录刻意最小化，并有固定保留上限。
+- 设置和审计数据只保存在当前用户的本地应用数据目录。
+- 应用不使用网络服务、遥测管道、客户端数据库访问、代码注入、屏幕截图、剪贴板捕获或远程控制。

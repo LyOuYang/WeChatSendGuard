@@ -14,6 +14,18 @@ use windows::{
 
 pub const TRUSTED_WEIXIN_PATH: &str = r"C:\Program Files\Tencent\Weixin\Weixin.exe";
 
+/// A user-selected target must remain an absolute `Weixin.exe` path. Existence is not
+/// checked here: a missing path is safe because it cannot match a running process.
+pub fn is_valid_weixin_executable_path(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    path.is_absolute()
+        && path.file_name().is_some_and(|file_name| {
+            file_name
+                .to_string_lossy()
+                .eq_ignore_ascii_case("Weixin.exe")
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessTrust {
     pub process_id: u32,
@@ -33,9 +45,19 @@ impl ProcessTrust {
     }
 }
 
-/// Resolves a foreground window's executable through a limited-information handle. An access
-/// failure is treated as unavailable/elevated and therefore never trusted.
+/// Resolves a foreground window's executable through a limited-information handle using the
+/// built-in supported Weixin path. An access failure is treated as unavailable/elevated and
+/// therefore never trusted.
 pub fn assess_window_trust(window_handle: isize) -> Result<ProcessTrust, PlatformError> {
+    assess_window_trust_for_executable(window_handle, Path::new(TRUSTED_WEIXIN_PATH))
+}
+
+/// Resolves a foreground window's executable using a path selected by the Windows adapter.
+/// This stays crate-private so platform configuration cannot be mistaken for a domain rule.
+pub(crate) fn assess_window_trust_for_executable(
+    window_handle: isize,
+    trusted_executable_path: impl AsRef<Path>,
+) -> Result<ProcessTrust, PlatformError> {
     if window_handle == 0 {
         return Ok(ProcessTrust::unavailable(0, false));
     }
@@ -65,7 +87,7 @@ pub fn assess_window_trust(window_handle: isize) -> Result<ProcessTrust, Platfor
     let process_path = path?;
     Ok(ProcessTrust {
         process_id,
-        is_trusted_weixin: path_matches_trusted_weixin(&process_path),
+        is_trusted_weixin: path_matches_configured_weixin(&process_path, trusted_executable_path),
         process_path,
         requires_elevation: false,
     })
@@ -98,7 +120,15 @@ fn query_process_path(handle: windows::Win32::Foundation::HANDLE) -> windows::co
 /// Windows paths are case-insensitive for this trust check. Failure to match exactly is safe:
 /// the caller will not observe or inject into that process.
 pub fn path_matches_trusted_weixin(path: impl AsRef<Path>) -> bool {
-    normalize_windows_path(path.as_ref()) == normalize_windows_path(Path::new(TRUSTED_WEIXIN_PATH))
+    path_matches_configured_weixin(path, Path::new(TRUSTED_WEIXIN_PATH))
+}
+
+pub(crate) fn path_matches_configured_weixin(
+    process_path: impl AsRef<Path>,
+    trusted_executable_path: impl AsRef<Path>,
+) -> bool {
+    normalize_windows_path(process_path.as_ref())
+        == normalize_windows_path(trusted_executable_path.as_ref())
 }
 
 fn normalize_windows_path(path: &Path) -> String {
@@ -111,7 +141,10 @@ fn normalize_windows_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::path_matches_trusted_weixin;
+    use super::{
+        is_valid_weixin_executable_path, path_matches_configured_weixin,
+        path_matches_trusted_weixin,
+    };
 
     #[test]
     fn trusted_path_match_is_case_and_separator_insensitive_only() {
@@ -122,5 +155,28 @@ mod tests {
             r"C:\Program Files\Tencent\Weixin\other.exe"
         ));
         assert!(!path_matches_trusted_weixin(r"C:\Users\someone\Weixin.exe"));
+    }
+
+    #[test]
+    fn custom_path_match_remains_exact_after_case_and_separator_normalization() {
+        assert!(path_matches_configured_weixin(
+            r"d:/Portable/Tencent/Weixin/Weixin.exe",
+            r"D:\portable\Tencent\Weixin\Weixin.exe"
+        ));
+        assert!(!path_matches_configured_weixin(
+            r"D:\Portable\Tencent\Weixin\Weixin.exe",
+            r"D:\Portable\Tencent\Weixin\other.exe"
+        ));
+    }
+
+    #[test]
+    fn configured_path_must_be_an_absolute_weixin_executable() {
+        assert!(is_valid_weixin_executable_path(
+            r"D:\Apps\Weixin\Weixin.exe"
+        ));
+        assert!(!is_valid_weixin_executable_path(r"Weixin.exe"));
+        assert!(!is_valid_weixin_executable_path(
+            r"D:\Apps\Weixin\other.exe"
+        ));
     }
 }

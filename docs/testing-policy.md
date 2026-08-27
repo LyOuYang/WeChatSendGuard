@@ -1,24 +1,24 @@
-# Test Policy
+# 测试策略
 
-## Automated Tests
+## 自动化测试范围
 
-Automated tests cover deterministic logic without connecting to Weixin:
+自动化测试只覆盖不连接真实微信的确定性逻辑：
 
-- rule matching and unknown-context decisions;
-- settings migration, sanitization, import/export, and atomic persistence behavior;
-- pending-confirmation lifecycle and stale-target rejection;
-- UI view-model state, confirmation timing behavior, screen-coordinate drag math, and popup-centering math;
-- guarded `Escape` classification and suppression bookkeeping without installing a hook;
-- Windows adapter structure using `FakeChatContextProvider` and `RecordingInputInjector`.
+- 规则匹配、未知会话决策、临时放行和确认状态机；
+- 设置兼容读写、边界清理、导入导出和原子持久化；
+- 待确认请求的生命周期与目标变化拒绝；
+- Slint 视图状态、确认计时、屏幕坐标拖动、确认窗居中和路径设置校验；
+- Esc 分类、按键抑制记账和合成输入标记，且不安装真实钩子；
+- Windows 适配器的路径精确匹配、启动项命令、审计序列化和内存测试替身。
 
-The test target must not launch Weixin, enumerate Weixin windows, attach UI Automation to Weixin, send input to Weixin, read a real message draft, use an account, or make network requests.
+自动化测试不得启动微信、枚举微信窗口、附加微信 UI Automation、向微信发送输入、读取真实草稿、使用账号、访问网络或依赖外部收件人。
 
-Debug-only `--ui-preview`, `--ui-snapshot`, and `--confirmation-snapshot` modes construct only fixed demo settings and demo text. They return before configuration loading, Weixin context monitoring, keyboard hook installation, audit logging, tray setup, or input injection. Snapshot images therefore cannot include a real chat title or draft.
+调试专用的 `--ui-preview`、`--ui-snapshot` 和 `--confirmation-snapshot` 仅构造固定演示设置和演示文案。它们在加载用户配置、启动微信上下文监视、安装键盘钩子、创建审计日志、初始化托盘或输入注入之前返回，因此截图不可能包含真实会话标题或草稿。
 
-## Safe Test Doubles
+## 测试替身
 
-`platform-api` provides explicit test doubles. The fake context provider returns only test-created snapshots. The recording injector records a requested key in memory and has no Win32 call path. These doubles are the only integration target used by automated state-machine and UI tests.
+`platform-api` 提供明确的内存假实现。假上下文提供器只返回测试创建的快照；记录型注入器只在内存中记录一次请求，完全没有 Win32 发送路径。自动化状态机和界面集成测试只能使用这些替身。
 
-## Manual Compatibility Validation
+## 人工兼容性验证
 
-Real Weixin validation is intentionally manual and performed only by the release owner using the isolated checklist in [manual-wechat-validation.md](manual-wechat-validation.md). A release may state compatibility only after that checklist is completed for the declared Windows and Weixin versions.
+真实微信验证被刻意保留为人工发布步骤，由发布负责人使用隔离测试账号和私有测试会话完成 [人工微信验证清单](manual-wechat-validation.md)。只有清单通过后，发布记录才能声明对对应 Windows 与微信版本的兼容性。

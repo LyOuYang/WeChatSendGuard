@@ -153,6 +153,10 @@ pub struct AppSettings {
     pub shift_enter_pass_through: bool,
     pub start_with_windows: bool,
     pub log_retention_days: u32,
+    /// Optional Windows adapter override. When absent, the adapter uses its built-in supported
+    /// executable path instead of making the domain layer own a Windows file-system default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_weixin_executable_path: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -170,6 +174,7 @@ impl Default for AppSettings {
             shift_enter_pass_through: true,
             start_with_windows: false,
             log_retention_days: 7,
+            trusted_weixin_executable_path: None,
         }
     }
 }
@@ -186,7 +191,7 @@ impl AppSettings {
     }
 }
 
-/// Preserves current .NET title normalization: trim and collapse whitespace into one ASCII space.
+/// Preserves the title-normalization contract: trim and collapse whitespace into one ASCII space.
 pub fn normalize_title(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {

@@ -1,51 +1,66 @@
-# Platform Adapter Contract
+# 平台适配契约
 
-## Purpose
+## 目的与边界
 
-This document is the handoff boundary for a later macOS or Linux implementation. It describes what must remain compatible with Windows v1; it does not authorize or prescribe development of those implementations now.
+本文是未来 macOS、Linux 平台开发者的交接说明。它定义哪些产品行为必须与 Windows `1.0.0` 保持一致，以及平台代码应落在什么边界；它不是 macOS 或 Linux 的实施计划，也不授权在当前版本中开发这些平台。
 
-## Stable Shared Contracts
+后续适配必须新建独立的平台包并由该平台的组合根装配。不得在 `guard-core`、`guard-service` 或 `desktop-ui` 中加入条件编译来调用某个操作系统 API。
 
-An adapter must preserve all of the following:
+## 必须复用的公共契约
 
-- `guard-core` rule evaluation and confirmation state-machine behavior;
-- settings file location conventions for its platform while preserving the same JSON shape and `schemaVersion: 2`;
-- protected and exemption list semantics, including group/contact separation and normalized title matching;
-- confirmation modes: click, hold, phrase, cancellation, timeout, and stale-target rejection;
-- privacy limits and audit schema;
-- UI language, hierarchy, status meaning, and keyboard accessibility defined in [ui-parity.md](ui-parity.md).
-
-An adapter must not share code by placing `cfg` branches inside the domain layer. OS-specific implementation belongs in a platform crate or package.
-
-## Required Capabilities
-
-The future adapter exposes the following capabilities to `desktop-app` through `platform-api`:
-
-| Capability | Required behavior |
+| 领域 | 不可改变的语义 |
 | --- | --- |
-| Foreground context | Return a snapshot containing app trust, process identity, native window identifier, supported target kind, normalized title source, editor focus, and observation generation. |
-| Input gate | Observe candidate send keys and suppress only a decision explicitly marked for suppression. Callback work must use cached state and return promptly. |
-| Input injection | Emit one tagged send key only after core revalidation succeeds. It must be distinguishable from physical input. |
-| Confirmation ownership | Identify confirmation windows so they are not mistaken for the protected target. |
-| Confirmation presentation | Center the confirmation over the pending native target when bounds are available, request focus best-effort, and consume `Escape` while confirmation is pending so it cannot reach the protected target. |
-| Tray and lifecycle | Show and restore settings from a minimized or hidden state, show the actual protection state plus the next toggle action, offer temporary bypass only where valid, and terminate cleanly. |
-| Startup registration | Use a per-user mechanism and never require administrator rights. |
-| Settings and audit storage | Persist atomically in a user-private application directory with bounded retention. |
+| 规则 | 使用 `guard-core` 判定名单、白名单、未知会话、临时放行和是否需要确认。 |
+| 确认 | 支持单击、长按、确认词、取消、超时和目标变化拒绝；任何取消都不能发送。 |
+| 目标重新校验 | 确认前后的进程身份、窗口、会话类型、规范化标题和编辑框焦点必须代表同一发送目标。 |
+| 隐私 | 不读取私有数据库、内存、截图、剪贴板或消息内容；草稿仅可短暂保存在确认窗内存中。 |
+| 审计 | 仅记录时间、受保护会话 ID、事件类型和结果，不记录会话名称或草稿。 |
+| 界面 | 复用 Slint 视图与中文状态语义，保持取消优先、可见焦点、Esc 取消和无障碍可用性。 |
+| 测试 | 自动化测试只能使用假上下文和记录型注入器，不能把真实微信、真实账号或真实聊天作为脚本目标。 |
 
-## Trust Model
+## `platform-api` 能力要求
 
-The adapter must define a deterministic trust rule for the target application. A process name alone is insufficient. On Windows v1, trust is an exact canonical executable path. A future adapter may use a signed bundle identifier, sandbox identity, or another platform-native proof, but must document it and reject ambiguity.
+未来适配器通过 `platform-api` 提供下列能力。接口名是稳定边界，内部实现和系统 API 可因平台不同而不同。
 
-If the target client exposes no stable, read-only accessibility metadata for current chat identity and editor focus, the adapter cannot claim send protection support. It may surface an unavailable state, but must not infer a target from text capture, screenshots, private databases, injected code, or memory inspection.
+| 能力 | 适配器必须做到 |
+| --- | --- |
+| `ChatContextProvider` | 返回前台目标快照，包含可信应用状态、稳定的进程/应用身份、原生窗口标识、会话类型、标题来源、编辑框焦点和观察代次。不能由截图、文字猜测、私有数据或进程内存推断身份。 |
+| `SendTargetPlatform` | 确认后恢复原编辑框并重新读取快照；只有状态机认可最新快照仍为同一发送目标时才允许后续注入。草稿预览如被支持，只能按需、内存内读取。 |
+| `InputGate` | 观察物理发送键，并且仅对服务明确要求抑制的事件进行抑制。回调必须读取缓存状态并快速返回，不能执行慢速无障碍查询或磁盘 I/O。 |
+| `InputInjector` | 只发送已经被状态机最终授权的一次按键，并能可靠区分自身合成输入与物理输入。 |
+| `StartupRegistration` | 使用当前用户范围的启动机制，不请求管理员权限。 |
+| 托盘与生命周期 | 从最小化或隐藏状态恢复同一个设置窗口；托盘必须同时显示当前守护状态和下一步切换动作；退出时停止输入观察。 |
+| 窗口呈现 | 确认窗在可获得目标边界时居中于原始目标；尝试获取焦点；确认存续期间必须消耗 Esc，避免其继续到受保护客户端。 |
+| 设置与审计 | 在用户私有应用目录原子保存设置，并实施有边界的审计保留策略。 |
 
-## macOS Notes
+## 身份、兼容性与注入安全条件
 
-macOS implementation work must use Accessibility APIs and input-monitoring permissions with a clear consent flow. It must perform a final focused-element and target revalidation immediately before a synthetic key event. A future macOS app must document notarization, hardened runtime, accessibility permission recovery, and bundle-signing behavior.
+进程名本身不能作为信任依据。每个平台必须定义一个可重复、可审计、不会因同名程序混淆的身份规则：Windows 使用精确可执行文件路径；macOS 可以使用已签名的 bundle 标识与代码签名；Linux 则必须定义受支持桌面环境中可验证的本机身份。身份规则、用户可修改部分和失败行为必须记录在该平台文档中。
 
-## Linux Notes
+适配器不得因为“看起来像聊天窗口”而启用守护。若目标客户端没有稳定的只读无障碍元数据来识别当前会话与编辑框焦点，只能显示不可用状态。以下任一情况均必须失败关闭：身份不可信、权限级别不一致、无障碍 API 失败、控件布局不兼容、上下文过期、目标变化、恢复焦点失败或注入失败。
 
-Linux implementation work must distinguish X11 from Wayland. X11 can offer global input observation subject to desktop-environment behavior. Wayland often intentionally forbids global hooks and synthetic input; a Linux adapter must not claim support unless it has a documented, desktop-environment-approved integration. Unsupported environments should show an unavailable status rather than degrade protection silently.
+合成按键发生前必须完成最终重新校验。适配器不得使用 DLL 注入、代码注入、进程内存、私有数据库、截图识别或复制粘贴模拟来绕过此约束。
 
-## Platform Test Rule
+## 设置兼容性
 
-Automated tests use fake context providers and recording injectors only. A real Weixin client, a real user account, chat data, and external recipients are never part of CI or scripted tests. Platform compatibility is verified through the manual protocol in [manual-wechat-validation.md](manual-wechat-validation.md).
+公共设置字段、名单语义、确认规则和审计字段应继续保持 `schemaVersion: 2` 的兼容读写，直到有经过记录的迁移才升级架构版本。Windows `trustedWeixinExecutablePath` 是 Windows 适配器拥有的可选覆盖字段：缺失时由 Windows 使用自己的默认路径；其他平台必须忽略它，不能将其解释为本平台的信任身份。
+
+新的平台专用设置应由该平台适配器拥有，并在新增前明确说明：默认值、持久化字段、用户可编辑范围、身份安全影响、从旧设置升级与回退策略。不要让平台专用字段改变 `guard-core` 的规则含义。
+
+## 界面与生命周期一致性
+
+应优先复用 `desktop-ui` 的 Slint 界面，而不是重新绘制一套功能不同的设置页。若平台窗口系统、权限流程或包格式需要专用外壳，外壳只能补充系统能力，不能改变这些用户可见行为：
+
+- 主设置窗口有明确的当前守护状态、未保存提示和保存反馈；
+- 路径或平台身份设置未保存时不影响当前运行中的信任规则；保存成功后立即使旧上下文失效；
+- 确认窗默认行为是取消，Esc 取消不应传给目标客户端；
+- 被最小化或隐藏的窗口可由托盘图标恢复；
+- 文本、按钮和状态在高 DPI 与键盘操作下保持可见、可达且不重叠。
+
+## 平台限制提示
+
+macOS 的适配必须处理 Accessibility 与输入监控授权、授权撤销、代码签名、Hardened Runtime 与公证要求。Linux 必须区分 X11 与 Wayland：X11 的全局输入能力取决于桌面环境；Wayland 经常明确禁止全局钩子和合成输入。没有经过桌面环境认可的能力时，应明确显示“不支持/不可用”，不能暗中降级为可能漏拦截的状态。
+
+## 验证边界
+
+CI 和自动化测试只运行纯规则、假适配器和固定 UI 快照。真实客户端兼容性只能由发布负责人在隔离测试账号与私有测试会话中人工验证。每个未来平台的发布记录应同时记录操作系统版本、客户端版本、平台身份规则、权限状态、安装包哈希和人工验证结果。
