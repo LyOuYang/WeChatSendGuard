@@ -312,6 +312,18 @@ impl SendGuardStateMachine {
         *lock_unpoisoned(&self.pending) = None;
     }
 
+    pub fn extend_deadline(&self, attempt_id: Uuid, duration: Duration) {
+        if duration.is_zero() {
+            return;
+        }
+        let mut current = lock_unpoisoned(&self.pending);
+        if let Some(pending) = current.as_mut() {
+            if pending.attempt_id == attempt_id {
+                pending.expires_at += duration;
+            }
+        }
+    }
+
     pub fn represents_same_send_target(original: &ChatContext, current: &ChatContext) -> bool {
         Self::represents_same_session(original, current) && current.is_message_editor_focused
     }

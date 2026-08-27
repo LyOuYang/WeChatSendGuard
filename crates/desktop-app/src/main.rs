@@ -1341,23 +1341,36 @@ fn start_timeout_timer(
 ) -> Timer {
     let timer = Timer::default();
     let confirmation_weak = confirmation.as_weak();
-    let expires_at = pending.expires_at;
+    let attempt_id = pending.attempt_id;
     let total = pending
         .expires_at
         .duration_since(pending.created_at)
         .unwrap_or(Duration::from_secs(1));
+    let remaining = Rc::new(RefCell::new(total));
+    let last_tick = Rc::new(RefCell::new(Instant::now()));
+
     timer.start(TimerMode::Repeated, CONFIRMATION_TICK_INTERVAL, move || {
         let Some(confirmation) = confirmation_weak.upgrade() else {
             return;
         };
-        let remaining = expires_at
-            .duration_since(SystemTime::now())
-            .unwrap_or(Duration::ZERO);
-        let percent = (remaining.as_secs_f32() / total.as_secs_f32() * 100.0).clamp(0.0, 100.0);
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(*last_tick.borrow());
+        *last_tick.borrow_mut() = now;
+
+        // 如果用户正在按住确认按钮：倒计时暂停，并向核心状态机同步顺延超时判定时间！
+        if confirmation.get_hold_pressed() {
+            service.extend_confirmation_deadline(attempt_id, delta);
+            return;
+        }
+
+        let mut rem = remaining.borrow_mut();
+        *rem = rem.saturating_sub(delta);
+        let percent = (rem.as_secs_f32() / total.as_secs_f32() * 100.0).clamp(0.0, 100.0);
         confirmation.set_countdown_progress(percent);
         confirmation
-            .set_countdown_text(format!("{:.1} 秒后自动取消", remaining.as_secs_f32()).into());
-        if remaining.is_zero() {
+            .set_countdown_text(format!("{:.1} 秒后自动取消", rem.as_secs_f32()).into());
+
+        if rem.is_zero() {
             finish_confirmation(
                 &active_weak,
                 service.clone(),

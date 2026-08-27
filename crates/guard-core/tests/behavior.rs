@@ -429,6 +429,38 @@ fn confirmed_unchanged_chat_injects_once_but_changed_or_expired_chat_does_not() 
 }
 
 #[test]
+fn holding_confirmation_extends_deadline_and_prevents_timeout() {
+    let machine = SendGuardStateMachine::default();
+    let context = group_editor(Some("测试群"));
+    let decision = ProtectionDecision {
+        kind: ProtectionDecisionKind::ConfirmProtected,
+        protected_chat: None,
+    };
+    let pending = machine
+        .try_begin(
+            context.clone(),
+            decision,
+            false,
+            Duration::from_secs(3),
+            fixed_now(),
+        )
+        .expect("confirmation should begin");
+
+    // 模拟按住暂停顺延 2 秒
+    machine.extend_deadline(pending.attempt_id, Duration::from_secs(2));
+
+    // 在 3.5 秒时确认（若未顺延则已超时失败，顺延后成功注入）
+    let resolution = machine.resolve(
+        pending.attempt_id,
+        ConfirmationOutcome::Confirmed,
+        &context,
+        fixed_now() + Duration::from_millis(3500),
+    );
+    assert!(resolution.should_inject);
+    assert_eq!(resolution.reason, "Confirmed");
+}
+
+#[test]
 fn only_one_confirmation_can_be_pending() {
     let machine = SendGuardStateMachine::default();
     let decision = ProtectionDecision {

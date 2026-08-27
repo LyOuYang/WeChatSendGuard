@@ -312,6 +312,10 @@ impl GuardService {
         self.state_machine.current()
     }
 
+    pub fn extend_confirmation_deadline(&self, attempt_id: uuid::Uuid, duration: Duration) {
+        self.state_machine.extend_deadline(attempt_id, duration);
+    }
+
     fn clear_active_confirmation(&self, attempt_id: uuid::Uuid) {
         let mut active = lock_unpoisoned(&self.active_confirmation);
         if *active == Some(attempt_id) {
