@@ -129,6 +129,7 @@ pub fn enable_high_dpi_awareness() {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::{ScreenRect, center_popup_in_rect};

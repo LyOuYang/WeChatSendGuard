@@ -334,7 +334,7 @@ export component AppWindow inherits Window {
     height: 580px;
     no-frame: true;
     resize-border-width: 8px;
-    background: #f6f8fa;
+    background: #ffffff;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
 
@@ -388,35 +388,20 @@ export component AppWindow inherits Window {
     callback about-slint-requested();
     callback settings-dirty();
 
-    Rectangle {
+    frame := Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #f6f8fa;
-        shadow := Rectangle {
-            x: 10px;
-            y: 12px;
-            width: parent.width - 16px;
-            height: parent.height - 16px;
-            background: #d8e0e8;
-            border-radius: 11px;
-        }
-        frame := Rectangle {
-            x: 8px;
-            y: 8px;
-            width: parent.width - 16px;
-            height: parent.height - 16px;
-            background: #ffffff;
-            border-width: 1px;
-            border-color: #d6dee7;
-            border-radius: 10px;
-            clip: true;
-            HorizontalLayout {
+        background: #f8fafc;
+        border-width: 1px;
+        border-color: #64748b;
+        clip: true;
+        HorizontalLayout {
         spacing: 0px;
         Rectangle {
             width: 220px;
-            background: #f8fafc;
+            background: #f1f5f9;
             border-width: 1px;
-            border-color: #e2e8f0;
+            border-color: #cbd5e1;
             VerticalLayout {
                 padding: 16px;
                 spacing: 8px;
@@ -515,11 +500,11 @@ export component AppWindow inherits Window {
         }
 
         Rectangle {
-            background: #ffffff;
+            background: #f8fafc;
             VerticalLayout {
                 Rectangle {
                     height: 40px;
-                    background: #ffffff;
+                    background: #f8fafc;
                     drag-area := TouchArea {
                         width: parent.width - 92px;
                         height: parent.height;
@@ -547,7 +532,7 @@ export component AppWindow inherits Window {
                 }
                 Rectangle {
                     vertical-stretch: 1;
-                    background: #ffffff;
+                    background: #f8fafc;
                     VerticalLayout {
                         padding: 24px;
                         spacing: 12px;
@@ -817,7 +802,7 @@ export component AppWindow inherits Window {
                 Rectangle {
                     height: 48px;
                     border-radius: 9px;
-                    background: root.save-status-error ? #fef2f2 : #f8fafc;
+                    background: root.save-status-error ? #fef2f2 : #ffffff;
                     border-width: 1px;
                     border-color: root.save-status-error ? #fca5a5 : #e2e8f0;
                     Text {
@@ -841,11 +826,10 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+            }
         }
     }
 }
-}
-        }
 }
 }
 
@@ -867,7 +851,7 @@ export component ConfirmationWindow inherits Window {
     height: 268px + (root.draft-preview != "" ? 54px : 0px) + (root.confirmation-mode == 2 ? 40px : 0px);
     no-frame: true;
     always-on-top: true;
-    background: #f6f8fa;
+    background: #ffffff;
     default-font-family: "Microsoft YaHei UI";
     default-font-size: 13px;
 
@@ -890,10 +874,8 @@ export component ConfirmationWindow inherits Window {
     forward-focus: keyboard-focus;
 
     keyboard-focus := FocusScope {
-        x: 14px;
-        y: 14px;
-        width: parent.width - 28px;
-        height: parent.height - 28px;
+        width: parent.width;
+        height: parent.height;
         capture-key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.cancelled();
@@ -907,8 +889,8 @@ export component ConfirmationWindow inherits Window {
             height: parent.height;
             background: #ffffff;
             border-width: 1px;
-            border-color: #e2e8f0;
-            border-radius: 12px;
+            border-color: #64748b;
+            clip: true;
             VerticalLayout {
                 padding: 20px;
                 spacing: 10px;
