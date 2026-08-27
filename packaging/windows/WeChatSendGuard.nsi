@@ -1,4 +1,4 @@
-Unicode True
+﻿Unicode True
 ManifestDPIAware true
 
 !ifndef APP_VERSION
@@ -38,6 +38,8 @@ VIAddVersionKey /LANG=2052 "CompanyName" "WeChatSendGuard"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "Copyright (c) WeChatSendGuard contributors"
 VIAddVersionKey /LANG=2052 "OriginalFilename" "WeChatSendGuard-Setup-${APP_VERSION}.exe"
 
+!define MUI_ICON "..\..\crates\desktop-ui\assets\app.ico"
+!define MUI_UNICON "..\..\crates\desktop-ui\assets\app.ico"
 !define MUI_ABORTWARNING
 !define MUI_STARTMENUPAGE_DEFAULTFOLDER "WeChatSendGuard"
 !define MUI_STARTMENUPAGE_REGISTRY_ROOT "HKCU"
@@ -59,6 +61,8 @@ Var StartMenuFolder
 
 Section "安装"
     SetShellVarContext current
+    ExecWait 'taskkill /F /IM WeChatSendGuard.exe' $0
+    Sleep 500
     SetOutPath "$INSTDIR"
     File /oname=WeChatSendGuard.exe "${APP_EXECUTABLE}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -78,10 +82,13 @@ Section "安装"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeChatSendGuard" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeChatSendGuard" "NoModify" 1
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeChatSendGuard" "NoRepair" 1
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd
 
 Section "Uninstall"
     SetShellVarContext current
+    ExecWait 'taskkill /F /IM WeChatSendGuard.exe' $0
+    Sleep 500
     !insertmacro MUI_STARTMENU_GETFOLDER Application $StartMenuFolder
     Delete "$SMPROGRAMS\$StartMenuFolder\WeChatSendGuard.lnk"
     Delete "$SMPROGRAMS\$StartMenuFolder\卸载 WeChatSendGuard.lnk"
@@ -92,4 +99,5 @@ Section "Uninstall"
     RMDir "$INSTDIR"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeChatSendGuard"
     DeleteRegKey HKCU "Software\WeChatSendGuard"
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd

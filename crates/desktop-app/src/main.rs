@@ -33,8 +33,8 @@ use wechat_send_guard_platform_windows::{
     KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog, WindowsContextMonitor,
     WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsStartupRegistration,
     activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
-    is_valid_weixin_executable_path, path_matches_trusted_weixin, select_protected_chat_export,
-    select_protected_chat_import,
+    enable_high_dpi_awareness, is_valid_weixin_executable_path, path_matches_trusted_weixin,
+    select_protected_chat_export, select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
 
@@ -112,6 +112,9 @@ struct ActiveConfirmation {
 }
 
 fn main() {
+    #[cfg(windows)]
+    enable_high_dpi_awareness();
+
     if let Err(error) = run() {
         show_startup_error(&error.to_string());
     }
@@ -125,8 +128,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         return run_ui_preview(AppSettings::default().sanitize());
     }
     #[cfg(debug_assertions)]
-    if arguments.iter().any(|argument| argument == "--ui-snapshot") {
-        return run_ui_snapshot(AppSettings::default().sanitize());
+    if let Some(pos) = arguments.iter().position(|a| a == "--ui-snapshot") {
+        let page = arguments.get(pos + 1).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+        let enabled = arguments.get(pos + 2).map(|s| s != "0" && s != "false").unwrap_or(true);
+        let mut settings = AppSettings::default().sanitize();
+        settings.enabled = enabled;
+        return run_ui_snapshot(settings, page);
     }
     #[cfg(debug_assertions)]
     if arguments
@@ -173,6 +180,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let main_window = AppWindow::new()?;
     let tray = AppTray::new()?;
+    tray.set_protection_enabled(controller.borrow().settings.enabled);
     let active_confirmation: ActiveConfirmationSlot = Rc::new(RefCell::new(None));
     let about_slint: SlintAboutSlot = Rc::new(RefCell::new(None));
     render_settings(&main_window, &controller.borrow().settings, None);
@@ -259,7 +267,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }));
     keyboard_hook.start()?;
 
-    tray.show()?;
+    let _ = tray.show();
     if !start_in_background {
         main_window.show()?;
     }
@@ -284,18 +292,21 @@ fn run_ui_preview(settings: AppSettings) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(debug_assertions)]
-fn run_ui_snapshot(settings: AppSettings) -> Result<(), Box<dyn Error>> {
+fn run_ui_snapshot(settings: AppSettings, active_page: i32) -> Result<(), Box<dyn Error>> {
     let window = AppWindow::new()?;
     render_settings(&window, &settings, None);
-    let active_page = std::env::var("WCSG_UI_SNAPSHOT_PAGE")
-        .ok()
-        .and_then(|value| value.parse::<i32>().ok())
-        .filter(|page| (0..=2).contains(page))
-        .unwrap_or(0);
+    let active_page = active_page.clamp(0, 2);
     window.set_active_page(active_page);
-    window.set_status_text("UI 像素校验模式：未启动发送守护".into());
-    window.set_status_healthy(false);
-    let snapshot_path = std::env::temp_dir().join("WeChatSendGuard-ui-preview.ppm");
+    let enabled = settings.enabled;
+    let enabled_suffix = if enabled { "enabled" } else { "disabled" };
+    let status = if enabled {
+        "UI 校验模式：发送保护守护已启用"
+    } else {
+        "UI 校验模式：发送保护守护已暂停"
+    };
+    window.set_status_text(status.into());
+    window.set_status_healthy(enabled);
+    let snapshot_path = std::env::temp_dir().join(format!("WeChatSendGuard-ui-preview-{active_page}-{enabled_suffix}.ppm"));
     capture_component_snapshot(&window, snapshot_path)
 }
 
@@ -328,21 +339,26 @@ where
     let component_weak = component.as_weak();
 
     component.show()?;
-    Timer::single_shot(Duration::from_millis(250), move || {
-        let outcome = component_weak
-            .upgrade()
-            .ok_or_else(|| "UI snapshot window was dropped before the snapshot".to_owned())
-            .and_then(|component| {
-                let snapshot = component
-                    .window()
-                    .take_snapshot()
-                    .map_err(|error| error.to_string())?;
-                let result = write_snapshot_as_ppm(&snapshot_path, &snapshot);
-                let _ = component.hide();
-                result
-            });
-        *completion_for_timer.borrow_mut() = Some(outcome);
-        let _ = slint::quit_event_loop();
+    Timer::single_shot(Duration::from_millis(600), move || {
+        let Some(comp) = component_weak.upgrade() else { return; };
+        comp.window().request_redraw();
+        let component_weak2 = comp.as_weak();
+        Timer::single_shot(Duration::from_millis(300), move || {
+            let outcome = component_weak2
+                .upgrade()
+                .ok_or_else(|| "UI snapshot window was dropped before the snapshot".to_owned())
+                .and_then(|component| {
+                    let snapshot = component
+                        .window()
+                        .take_snapshot()
+                        .map_err(|error| error.to_string())?;
+                    let result = write_snapshot_as_ppm(&snapshot_path, &snapshot);
+                    let _ = component.hide();
+                    result
+                });
+            *completion_for_timer.borrow_mut() = Some(outcome);
+            let _ = slint::quit_event_loop();
+        });
     });
     slint::run_event_loop()?;
 
@@ -740,6 +756,10 @@ fn bind_tray_callbacks(
 fn show_and_restore_main_window(window: &AppWindow) {
     window.window().set_minimized(false);
     let _ = window.show();
+    #[cfg(windows)]
+    if let Some(window_handle) = native_window_handle(window.window()) {
+        activate_window(window_handle);
+    }
 }
 
 fn update_protection_enabled(

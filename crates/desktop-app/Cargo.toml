@@ -21,3 +21,6 @@ wechat-send-guard-desktop-ui = { path = "../desktop-ui" }
 wechat-send-guard-platform-api = { path = "../platform-api" }
 wechat-send-guard-platform-windows = { path = "../platform-windows" }
 wechat-send-guard-service = { path = "../guard-service" }
+
+[build-dependencies]
+winresource = "0.1"

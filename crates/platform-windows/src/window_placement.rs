@@ -5,7 +5,15 @@
 
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
-    UI::WindowsAndMessaging::{BringWindowToTop, GetCursorPos, GetWindowRect, SetForegroundWindow},
+    System::Threading::{AttachThreadInput, GetCurrentThreadId},
+    UI::{
+        Input::KeyboardAndMouse::SetFocus,
+        WindowsAndMessaging::{
+            BringWindowToTop, GetCursorPos, GetForegroundWindow, GetWindowRect,
+            GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+            SW_SHOW,
+        },
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +44,7 @@ pub fn center_popup_over_window(
     }
 
     let mut rect = RECT::default();
-    // SAFETY: HWND is supplied by the caller, the result is checked, and RECT is valid for the
-    // synchronous call. The API does not retain either value.
+    // SAFETY: The handle is checked non-zero and RECT is written directly on the stack.
     unsafe { GetWindowRect(HWND(window_handle as _), &mut rect).ok()? };
     center_popup_in_rect(
         ScreenRect {
@@ -64,8 +71,27 @@ pub fn activate_window(window_handle: isize) {
     // SAFETY: HWND is caller-provided and these APIs neither retain it nor dereference caller
     // memory. Failures are intentionally non-fatal because focus acquisition is best-effort.
     unsafe {
-        let _ = BringWindowToTop(window);
-        let _ = SetForegroundWindow(window);
+        if IsIconic(window).as_bool() {
+            let _ = ShowWindow(window, SW_RESTORE);
+        } else {
+            let _ = ShowWindow(window, SW_SHOW);
+        }
+
+        let foreground = GetForegroundWindow();
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let current_thread = GetCurrentThreadId();
+
+        if foreground_thread != 0 && foreground_thread != current_thread {
+            let _ = AttachThreadInput(current_thread, foreground_thread, true);
+            let _ = BringWindowToTop(window);
+            let _ = SetForegroundWindow(window);
+            let _ = SetFocus(Some(window));
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        } else {
+            let _ = BringWindowToTop(window);
+            let _ = SetForegroundWindow(window);
+            let _ = SetFocus(Some(window));
+        }
     }
 }
 
@@ -91,6 +117,16 @@ fn center_popup_in_rect(
 
 fn clamp_to_i32(value: i64) -> i32 {
     value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Configures Per-Monitor V2 high-DPI awareness on Windows 10/11 to avoid DWM bitmap stretching.
+pub fn enable_high_dpi_awareness() {
+    unsafe {
+        use windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
 }
 
 #[cfg(test)]

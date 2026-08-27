@@ -17,10 +17,17 @@ if (-not $versionMatch.Success) {
 
 if (-not $MakensisPath) {
     $makensisCommand = Get-Command makensis.exe -ErrorAction SilentlyContinue
-    if (-not $makensisCommand) {
+    if ($makensisCommand) {
+        $MakensisPath = $makensisCommand.Source
+    } elseif (Test-Path "$env:LOCALAPPDATA\tauri\NSIS\makensis.exe") {
+        $MakensisPath = "$env:LOCALAPPDATA\tauri\NSIS\makensis.exe"
+    } elseif (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe") {
+        $MakensisPath = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+    } elseif (Test-Path "$env:ProgramFiles\NSIS\makensis.exe") {
+        $MakensisPath = "$env:ProgramFiles\NSIS\makensis.exe"
+    } else {
         throw "NSIS 3.x is required. Install NSIS or pass -MakensisPath with the full path to makensis.exe."
     }
-    $MakensisPath = $makensisCommand.Source
 }
 
 if (-not (Test-Path -LiteralPath $MakensisPath -PathType Leaf)) {
@@ -46,7 +53,7 @@ $installerPath = Join-Path $outputDirectory "WeChatSendGuard-Setup-$version.exe"
 $installerScript = Join-Path $PSScriptRoot "WeChatSendGuard.nsi"
 $windowsVersion = "{0}.{1}.{2}.0" -f $versionMatch.Groups["major"].Value, $versionMatch.Groups["minor"].Value, $versionMatch.Groups["patch"].Value
 
-& $MakensisPath "/V2" "/DAPP_VERSION=$version" "/DAPP_VERSION_WIN=$windowsVersion" "/DAPP_EXECUTABLE=$applicationPath" "/DOUTPUT_FILE=$installerPath" $installerScript
+& $MakensisPath "/V2" "/INPUTCHARSET" "UTF8" "/DAPP_VERSION=$version" "/DAPP_VERSION_WIN=$windowsVersion" "/DAPP_EXECUTABLE=$applicationPath" "/DOUTPUT_FILE=$installerPath" $installerScript
 if ($LASTEXITCODE -ne 0) {
     throw "NSIS installer build failed."
 }
