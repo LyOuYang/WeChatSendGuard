@@ -31,6 +31,7 @@
   "unknownContextBehavior": "Confirm",
   "interceptNumpadEnter": true,
   "interceptKeyboardEnter": true,
+  "interceptSendButton": true,
   "shiftEnterPassThrough": true,
   "startWithWindows": false,
   "logRetentionDays": 7

@@ -11,6 +11,10 @@ use uuid::Uuid;
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const DEFAULT_CONFIRMATION_PHRASE: &str = "确认发送";
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConfirmationMode {
     Click,
@@ -150,6 +154,8 @@ pub struct AppSettings {
     pub unknown_context_behavior: UnknownContextBehavior,
     pub intercept_numpad_enter: bool,
     pub intercept_keyboard_enter: bool,
+    #[serde(default = "default_true")]
+    pub intercept_send_button: bool,
     pub shift_enter_pass_through: bool,
     pub start_with_windows: bool,
     pub log_retention_days: u32,
@@ -171,6 +177,7 @@ impl Default for AppSettings {
             unknown_context_behavior: UnknownContextBehavior::Confirm,
             intercept_numpad_enter: true,
             intercept_keyboard_enter: true,
+            intercept_send_button: true,
             shift_enter_pass_through: true,
             start_with_windows: false,
             log_retention_days: 7,

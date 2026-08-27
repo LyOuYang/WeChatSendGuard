@@ -131,6 +131,56 @@ impl GuardService {
         }
     }
 
+    /// Handles a physical click that the platform has already identified as the Weixin send
+    /// button. It intentionally does not depend on the keyboard-Enter preference: the two input
+    /// strategies are independent settings, but they share the same protection decision and
+    /// confirmation state machine.
+    pub fn handle_send_button_click(
+        &self,
+        foreground_window: isize,
+        now: SystemTime,
+    ) -> EnterHandling {
+        let settings = self.settings();
+        if !settings.enabled || !settings.intercept_send_button {
+            return EnterHandling::PassThrough;
+        }
+
+        let context = self.platform.current();
+        if context.window_handle != foreground_window
+            || !context.is_trusted_weixin
+            || !context.is_compatibility_available
+            || !context.is_message_editor_focused
+        {
+            return EnterHandling::PassThrough;
+        }
+
+        if context_is_stale(&context, now) {
+            self.write_audit(None, "send-button-blocked", "stale-context", now);
+            return EnterHandling::SuppressBlockedUnknown;
+        }
+
+        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
+        if !decision.should_suppress() {
+            return EnterHandling::PassThrough;
+        }
+        if decision.kind == ProtectionDecisionKind::BlockUnknown {
+            self.write_audit(None, "send-button-blocked", "unknown-chat", now);
+            return EnterHandling::SuppressBlockedUnknown;
+        }
+
+        let timeout = Duration::from_secs(u64::from(settings.confirmation.timeout_seconds));
+        match self
+            .state_machine
+            .try_begin(context, decision, false, timeout, now)
+        {
+            Some(pending) => {
+                *lock_unpoisoned(&self.active_confirmation) = Some(pending.attempt_id);
+                EnterHandling::SuppressAndConfirm(Box::new(pending))
+            }
+            None => EnterHandling::SuppressWhileConfirmationActive,
+        }
+    }
+
     /// Reads an optional preview after suppression, never on the keyboard-hook path. The
     /// preview is returned only to the UI and is intentionally not logged or persisted.
     pub fn enrich_pending_confirmation(

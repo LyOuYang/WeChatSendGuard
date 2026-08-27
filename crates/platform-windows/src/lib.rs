@@ -25,11 +25,11 @@ pub mod window_placement;
 #[cfg(windows)]
 pub use audit::{WindowsAuditLog, default_audit_log_directory};
 #[cfg(windows)]
-pub use context::{WindowsContextMonitor, WindowsContextProvider};
+pub use context::{SendButtonDiagnostic, WindowsContextMonitor, WindowsContextProvider};
 #[cfg(windows)]
 pub use file_dialog::{select_protected_chat_export, select_protected_chat_import};
 #[cfg(windows)]
-pub use hook::{KeyboardKey, KeyboardStroke, WindowsKeyboardHook};
+pub use hook::{KeyboardKey, KeyboardStroke, MouseClick, WindowsKeyboardHook, WindowsMouseHook};
 #[cfg(windows)]
 pub use input::WindowsInputInjector;
 #[cfg(windows)]

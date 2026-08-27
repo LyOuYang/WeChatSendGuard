@@ -292,6 +292,23 @@ fn schema_v2_fixture_from_the_dotnet_contract_loads_without_loss() {
     assert_eq!(settings.exempted_chats.len(), 1);
     assert_eq!(settings.confirmation.phrase, "确认发送");
     assert_eq!(settings.trusted_weixin_executable_path, None);
+    assert!(settings.intercept_send_button);
+}
+
+#[test]
+fn missing_send_button_interception_defaults_to_enabled() {
+    let mut fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/settings-schema-v2.json"))
+            .expect("fixture should deserialize as JSON");
+    fixture
+        .as_object_mut()
+        .expect("fixture should be a JSON object")
+        .remove("interceptSendButton");
+
+    let settings: AppSettings = serde_json::from_value(fixture)
+        .expect("legacy settings should deserialize without the new preference");
+
+    assert!(settings.intercept_send_button);
 }
 
 #[test]

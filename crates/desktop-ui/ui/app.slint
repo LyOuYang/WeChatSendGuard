@@ -354,6 +354,7 @@ export component AppWindow inherits Window {
     in-out property <int> confirmation-mode: 1;
     in-out property <bool> intercept-keyboard-enter: true;
     in-out property <bool> intercept-numpad-enter: true;
+    in-out property <bool> intercept-send-button: true;
     in-out property <int> unknown-context-behavior: 0;
     in-out property <bool> start-with-windows: false;
     in-out property <string> log-retention-days: "7";
@@ -375,6 +376,7 @@ export component AppWindow inherits Window {
     callback confirmation-mode-selected(int);
     callback keyboard-enter-toggled(bool);
     callback numpad-enter-toggled(bool);
+    callback send-button-toggled(bool);
     callback unknown-context-selected(int);
     callback startup-toggled(bool);
     callback reset-weixin-executable-path();
@@ -698,20 +700,33 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 padding: 16px;
                                 spacing: 6px;
-                                Text { text: "输入策略"; color: #0f172a; font-size: 14px; font-weight: 600; }
-                                ToggleLine {
-                                    label: "拦截主键盘 Enter";
-                                    note: "关闭后，不会处理任何 Enter 发送。";
-                                    checked: root.intercept-keyboard-enter;
-                                    toggled(value) => { root.intercept-keyboard-enter = value; root.keyboard-enter-toggled(value); }
+                                Text { text: "拦截策略"; color: #0f172a; font-size: 14px; font-weight: 600; }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    ToggleLine {
+                                        horizontal-stretch: 1;
+                                        label: "拦截发送按钮";
+                                        note: "";
+                                        checked: root.intercept-send-button;
+                                        toggled(value) => { root.intercept-send-button = value; root.send-button-toggled(value); }
+                                    }
+                                    ToggleLine {
+                                        horizontal-stretch: 1;
+                                        label: "拦截主键盘 Enter";
+                                        note: "";
+                                        checked: root.intercept-keyboard-enter;
+                                        toggled(value) => { root.intercept-keyboard-enter = value; root.keyboard-enter-toggled(value); }
+                                    }
+                                    ToggleLine {
+                                        horizontal-stretch: 1;
+                                        label: "拦截数字键盘 Enter";
+                                        note: "";
+                                        checked: root.intercept-numpad-enter;
+                                        toggled(value) => { root.intercept-numpad-enter = value; root.numpad-enter-toggled(value); }
+                                    }
                                 }
-                                ToggleLine {
-                                    label: "拦截数字键盘 Enter";
-                                    note: "主键盘 Enter 启用时可单独关闭。";
-                                    checked: root.intercept-numpad-enter;
-                                    toggled(value) => { root.intercept-numpad-enter = value; root.numpad-enter-toggled(value); }
-                                }
-                                Text { height: 20px; text: "Shift+Enter 与输入法候选确认始终放行。"; color: #64748b; font-size: 11px; }
+                                Text { height: 18px; text: "发送按钮命中后按当前确认方式处理；关闭主键盘 Enter 后不处理键盘 Enter 发送。"; color: #64748b; font-size: 11px; }
+                                Text { height: 18px; text: "Shift+Enter 与输入法候选确认始终放行。"; color: #64748b; font-size: 11px; }
                             }
                         }
                     }

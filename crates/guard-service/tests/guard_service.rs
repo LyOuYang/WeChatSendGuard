@@ -38,6 +38,17 @@ fn physical_enter() -> PhysicalEnter {
     }
 }
 
+fn protected_button_settings() -> AppSettings {
+    AppSettings {
+        protected_chats: vec![ProtectedChat {
+            match_title: "工作群".into(),
+            target_kind: ChatTargetKind::Group,
+            ..ProtectedChat::default()
+        }],
+        ..AppSettings::default()
+    }
+}
+
 #[test]
 fn fake_platform_can_exercise_full_confirm_then_recorded_injection_flow() {
     let context = protected_context("工作群");
@@ -75,6 +86,53 @@ fn fake_platform_can_exercise_full_confirm_then_recorded_injection_flow() {
     assert_eq!(
         audit.entries().last().expect("audit entry").result,
         "injected"
+    );
+}
+
+#[test]
+fn send_button_click_uses_the_same_confirmation_and_injection_path_as_enter() {
+    let context = protected_context("工作群");
+    let platform = Arc::new(FakeChatContextProvider::new(context));
+    let injector = Arc::new(RecordingInputInjector::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        injector.clone(),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_send_button_click(42, fixed_now())
+    else {
+        panic!("protected send-button click should be suppressed and confirmed");
+    };
+    assert!(matches!(
+        service.complete_confirmation(
+            &pending,
+            ConfirmationOutcome::Confirmed,
+            fixed_now() + Duration::from_secs(1),
+        ),
+        CompletionResult::Injected
+    ));
+    assert_eq!(injector.sent().len(), 1);
+}
+
+#[test]
+fn disabled_send_button_strategy_passes_the_click_through() {
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+    let service = GuardService::new(
+        AppSettings {
+            intercept_send_button: false,
+            ..protected_button_settings()
+        },
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    assert_eq!(
+        service.handle_send_button_click(42, fixed_now()),
+        EnterHandling::PassThrough
     );
 }
 

@@ -15,8 +15,9 @@ use windows::Win32::{
         },
         WindowsAndMessaging::{
             CallNextHookEx, GetForegroundWindow, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
-            LLKHF_INJECTED, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN,
-            WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, SetWindowsHookExW,
+            UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
 };
@@ -40,7 +41,17 @@ pub struct KeyboardStroke {
     pub foreground_window: isize,
 }
 
+/// A physical left mouse-button down event. It deliberately contains only screen coordinates and
+/// the foreground window, never text, a UI Automation element, or chat metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseClick {
+    pub screen_x: i32,
+    pub screen_y: i32,
+    pub foreground_window: isize,
+}
+
 type KeyDownHandler = dyn Fn(KeyboardStroke) -> bool + Send + Sync + 'static;
+type MouseDownHandler = dyn Fn(MouseClick) -> bool + Send + Sync + 'static;
 
 #[derive(Default)]
 struct HookState {
@@ -146,10 +157,115 @@ impl Drop for WindowsKeyboardHook {
     }
 }
 
+#[derive(Default)]
+struct MouseHookState {
+    marker: usize,
+    handler: RwLock<Option<Arc<MouseDownHandler>>>,
+    suppress_left_button_up: AtomicBool,
+}
+
+/// Low-level mouse hook used by the send-button strategy. The callback is deliberately limited to
+/// left-button transitions; callers return `true` only after a fast, cached decision, and the
+/// matching button-up is then suppressed as well so Windows cannot synthesize a partial click.
+pub struct WindowsMouseHook {
+    state: Arc<MouseHookState>,
+    native_hook: isize,
+}
+
+impl WindowsMouseHook {
+    pub fn new(marker: usize) -> Self {
+        Self {
+            state: Arc::new(MouseHookState {
+                marker,
+                ..MouseHookState::default()
+            }),
+            native_hook: 0,
+        }
+    }
+
+    pub fn set_left_down_handler(&self, handler: Arc<MouseDownHandler>) {
+        *write_unpoisoned(&self.state.handler) = Some(handler);
+    }
+
+    pub fn clear_left_down_handler(&self) {
+        *write_unpoisoned(&self.state.handler) = None;
+    }
+
+    pub fn is_started(&self) -> bool {
+        self.native_hook != 0
+    }
+
+    pub fn start(&mut self) -> PlatformResult<()> {
+        if self.is_started() {
+            return Ok(());
+        }
+
+        let active = active_mouse_hook();
+        {
+            let mut slot = lock_unpoisoned(active);
+            if slot.is_some() {
+                return Err(PlatformError::new(
+                    "mouse-hook-already-active",
+                    "Only one low-level mouse hook may be active in this process.",
+                ));
+            }
+            *slot = Some(Arc::clone(&self.state));
+        }
+
+        // SAFETY: the callback is a process-lifetime function pointer and the active state is
+        // retained in a global slot before installation.
+        let hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), None, 0) };
+        match hook {
+            Ok(hook) => {
+                self.native_hook = hook.0 as isize;
+                Ok(())
+            }
+            Err(error) => {
+                *lock_unpoisoned(active) = None;
+                Err(PlatformError::new(
+                    "mouse-hook-install-failed",
+                    error.to_string(),
+                ))
+            }
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.clear_left_down_handler();
+        self.state
+            .suppress_left_button_up
+            .store(false, Ordering::Release);
+        if self.native_hook != 0 {
+            // SAFETY: this value was returned by SetWindowsHookExW and is unhooked at most once.
+            let _ = unsafe { UnhookWindowsHookEx(HHOOK(self.native_hook as _)) };
+            self.native_hook = 0;
+        }
+
+        let mut active = lock_unpoisoned(active_mouse_hook());
+        if active
+            .as_ref()
+            .is_some_and(|state| Arc::ptr_eq(state, &self.state))
+        {
+            *active = None;
+        }
+    }
+}
+
+impl Drop for WindowsMouseHook {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 static ACTIVE_HOOK: OnceLock<Mutex<Option<Arc<HookState>>>> = OnceLock::new();
+static ACTIVE_MOUSE_HOOK: OnceLock<Mutex<Option<Arc<MouseHookState>>>> = OnceLock::new();
 
 fn active_hook() -> &'static Mutex<Option<Arc<HookState>>> {
     ACTIVE_HOOK.get_or_init(|| Mutex::new(None))
+}
+
+fn active_mouse_hook() -> &'static Mutex<Option<Arc<MouseHookState>>> {
+    ACTIVE_MOUSE_HOOK.get_or_init(|| Mutex::new(None))
 }
 
 unsafe extern "system" fn low_level_keyboard_proc(
@@ -179,6 +295,59 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
     // SAFETY: forwarding preserves the original callback arguments unchanged.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+unsafe extern "system" fn low_level_mouse_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && lparam.0 != 0 {
+        let state = lock_unpoisoned(active_mouse_hook()).clone();
+        if let Some(state) = state {
+            // SAFETY: Windows invokes a low-level mouse hook with LPARAM pointing at a valid
+            // MSLLHOOKSTRUCT for non-negative callback codes. We copy it immediately.
+            let data = unsafe { (lparam.0 as *const MSLLHOOKSTRUCT).read_unaligned() };
+            match wparam.0 as u32 {
+                WM_LBUTTONDOWN if handle_left_mouse_down(&state, data) => {
+                    state
+                        .suppress_left_button_up
+                        .store(true, Ordering::Release);
+                    return LRESULT(1);
+                }
+                WM_LBUTTONUP
+                    if state
+                        .suppress_left_button_up
+                        .swap(false, Ordering::AcqRel) =>
+                {
+                    return LRESULT(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // SAFETY: forwarding preserves the original callback arguments for pass-through events.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn handle_left_mouse_down(state: &MouseHookState, data: MSLLHOOKSTRUCT) -> bool {
+    let is_injected = data.flags & LLMHF_INJECTED != 0 || data.dwExtraInfo == state.marker;
+    if is_injected {
+        return false;
+    }
+
+    // SAFETY: this reads transient foreground-window state and retains no data.
+    let foreground_window = unsafe { GetForegroundWindow().0 as isize };
+    let click = MouseClick {
+        screen_x: data.pt.x,
+        screen_y: data.pt.y,
+        foreground_window,
+    };
+    if let Some(handler) = read_unpoisoned(&state.handler).clone() {
+        return catch_unwind(AssertUnwindSafe(|| handler(click))).unwrap_or(false);
+    }
+    false
 }
 
 fn handle_key_down(state: &HookState, data: KBDLLHOOKSTRUCT, key: KeyboardKey) -> bool {
@@ -275,7 +444,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyboardKey, KeyboardStroke, keyboard_key_from_virtual_key};
+    use super::{KeyboardKey, KeyboardStroke, MouseClick, keyboard_key_from_virtual_key};
 
     #[test]
     fn keyboard_stroke_is_plain_data_and_does_not_install_a_hook() {
@@ -298,5 +467,16 @@ mod tests {
             Some(KeyboardKey::Escape)
         );
         assert_eq!(keyboard_key_from_virtual_key(0x41), None);
+    }
+
+    #[test]
+    fn mouse_click_is_plain_data_and_does_not_install_a_hook() {
+        let click = MouseClick {
+            screen_x: 300,
+            screen_y: 500,
+            foreground_window: 42,
+        };
+        assert_eq!((click.screen_x, click.screen_y), (300, 500));
+        assert_eq!(click.foreground_window, 42);
     }
 }

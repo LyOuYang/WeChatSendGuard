@@ -12,7 +12,7 @@ use wechat_send_guard_platform_api::{
     ChatContextProvider, PlatformError, PlatformResult, SendTargetPlatform,
 };
 use windows::Win32::{
-    Foundation::{HWND, RPC_E_CHANGED_MODE},
+    Foundation::{HWND, RECT, RPC_E_CHANGED_MODE},
     System::Com::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         CoUninitialize,
@@ -20,8 +20,8 @@ use windows::Win32::{
     UI::{
         Accessibility::{
             CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-            IUIAutomationValuePattern, TreeScope_Descendants, UIA_TextPatternId,
-            UIA_ValuePatternId,
+            IUIAutomationValuePattern, TreeScope_Descendants, UIA_ButtonControlTypeId,
+            UIA_TextPatternId, UIA_ValuePatternId,
         },
         WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow},
     },
@@ -38,6 +38,97 @@ const GROUP_TITLE_CLASS_SUFFIX: &str = "mmui::ChatTitleBarChatRoomView";
 const DRAFT_PREVIEW_LIMIT: usize = 240;
 const FOCUS_RECOVERY_TIMEOUT: Duration = Duration::from_millis(900);
 const FOCUS_RECOVERY_RETRY: Duration = Duration::from_millis(30);
+const SEND_BUTTON_SNAPSHOT_MAX_AGE: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl ScreenRect {
+    fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.left && x < self.right && y >= self.top && y < self.bottom
+    }
+
+    fn from_windows_rect(rect: RECT) -> Option<Self> {
+        (rect.right > rect.left && rect.bottom > rect.top).then_some(Self {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendButtonSnapshotState {
+    NotObserved,
+    QueryFailed,
+    NotFound,
+    Disabled,
+    Enabled,
+    StateUnavailable,
+    GeometryUnavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SendButtonSnapshot {
+    window_handle: isize,
+    observed_at: Option<SystemTime>,
+    state: SendButtonSnapshotState,
+    bounds: Option<ScreenRect>,
+}
+
+impl SendButtonSnapshot {
+    fn not_observed(window_handle: isize, observed_at: Option<SystemTime>) -> Self {
+        Self {
+            window_handle,
+            observed_at,
+            state: SendButtonSnapshotState::NotObserved,
+            bounds: None,
+        }
+    }
+}
+
+/// Content-free result of matching a physical click against the cached Weixin send-button
+/// snapshot. It is also written to the audit log to explain why a click was or was not blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendButtonDiagnostic {
+    HitEnabledButton,
+    HitDisabledButton,
+    ClickOutsideButton,
+    ButtonNotFound,
+    ButtonDisabled,
+    ButtonGeometryUnavailable,
+    SnapshotUnavailable,
+    SnapshotStale,
+    SnapshotWindowMismatch,
+    UntrustedWindow,
+}
+
+impl SendButtonDiagnostic {
+    pub fn audit_result(self) -> &'static str {
+        match self {
+            Self::HitEnabledButton => "button-hit-enabled",
+            Self::HitDisabledButton => "button-hit-disabled",
+            Self::ClickOutsideButton => "point-outside-send-button",
+            Self::ButtonNotFound => "send-button-not-found",
+            Self::ButtonDisabled => "send-button-disabled",
+            Self::ButtonGeometryUnavailable => "send-button-geometry-unavailable",
+            Self::SnapshotUnavailable => "send-button-snapshot-unavailable",
+            Self::SnapshotStale => "send-button-snapshot-stale",
+            Self::SnapshotWindowMismatch => "send-button-window-mismatch",
+            Self::UntrustedWindow => "untrusted-window",
+        }
+    }
+
+    pub fn should_intercept(self) -> bool {
+        self == Self::HitEnabledButton
+    }
+}
 
 /// Cached foreground-context provider. Constructing it only allocates an in-memory snapshot;
 /// use `refresh_now` or `WindowsContextMonitor::start` to request Windows metadata.
@@ -46,6 +137,7 @@ pub struct WindowsContextProvider {
     current: RwLock<ChatContext>,
     last_recognized_chat: RwLock<Option<ChatContext>>,
     trusted_executable: RwLock<TrustedExecutable>,
+    send_button: RwLock<SendButtonSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +163,7 @@ impl WindowsContextProvider {
         Self {
             current: RwLock::new(ChatContext::default()),
             last_recognized_chat: RwLock::new(None),
+            send_button: RwLock::new(SendButtonSnapshot::not_observed(0, None)),
             trusted_executable: RwLock::new(TrustedExecutable {
                 path: resolved_trusted_weixin_path(configured_path),
                 generation: 0,
@@ -90,7 +183,10 @@ impl WindowsContextProvider {
         };
 
         *write_unpoisoned(&self.last_recognized_chat) = None;
-        self.publish(ChatContext::default(), generation);
+        self.publish(
+            ChatContext::default(),
+            generation,
+        );
         let _ = self.refresh_foreground();
     }
 
@@ -122,16 +218,46 @@ impl WindowsContextProvider {
                 requires_elevation: false,
             });
 
-        let candidate = if !trust.is_trusted_weixin {
-            context_from_trust(window_handle, trust, observed_at)
+        let (candidate, send_button) = if !trust.is_trusted_weixin {
+            (
+                context_from_trust(window_handle, trust, observed_at),
+                SendButtonSnapshot::not_observed(window_handle, Some(observed_at)),
+            )
         } else {
             inspect_supported_weixin_window(window_handle, trust.clone(), observed_at)
-                .unwrap_or_else(|_| context_from_trust(window_handle, trust, observed_at))
+                .unwrap_or_else(|_| {
+                    (
+                        context_from_trust(window_handle, trust, observed_at),
+                        SendButtonSnapshot {
+                            window_handle,
+                            observed_at: Some(observed_at),
+                            state: SendButtonSnapshotState::QueryFailed,
+                            bounds: None,
+                        },
+                    )
+                })
         };
-        self.publish(candidate, trust_generation)
+        self.publish_with_button(candidate, send_button, trust_generation)
     }
 
-    fn publish(&self, mut candidate: ChatContext, trust_generation: u64) -> ChatContext {
+    fn publish(
+        &self,
+        candidate: ChatContext,
+        trust_generation: u64,
+    ) -> ChatContext {
+        self.publish_with_button(
+            candidate,
+            SendButtonSnapshot::not_observed(0, None),
+            trust_generation,
+        )
+    }
+
+    fn publish_with_button(
+        &self,
+        mut candidate: ChatContext,
+        send_button: SendButtonSnapshot,
+        trust_generation: u64,
+    ) -> ChatContext {
         let trusted = read_unpoisoned(&self.trusted_executable);
         if trusted.generation != trust_generation {
             return read_unpoisoned(&self.current).clone();
@@ -143,6 +269,7 @@ impl WindowsContextProvider {
             current.generation.saturating_add(1)
         };
         *current = candidate.clone();
+        *write_unpoisoned(&self.send_button) = send_button;
         if candidate.is_trusted_weixin {
             let mut last_recognized_chat = write_unpoisoned(&self.last_recognized_chat);
             *last_recognized_chat = is_recognized_chat(&candidate).then(|| candidate.clone());
@@ -200,6 +327,66 @@ impl WindowsContextProvider {
             };
             Ok(read_draft_preview(&editor))
         })
+    }
+
+    /// Classifies a click using only the most recent monitor snapshot. This method is deliberately
+    /// small and read-only so it can run in the low-level mouse callback.
+    pub fn classify_send_button_click(
+        &self,
+        window_handle: isize,
+        screen_x: i32,
+        screen_y: i32,
+        now: SystemTime,
+    ) -> SendButtonDiagnostic {
+        let context = self.current();
+        if !context.is_trusted_weixin {
+            return SendButtonDiagnostic::UntrustedWindow;
+        }
+
+        let snapshot = *read_unpoisoned(&self.send_button);
+        if snapshot.window_handle != window_handle {
+            return SendButtonDiagnostic::SnapshotWindowMismatch;
+        }
+        let Some(observed_at) = snapshot.observed_at else {
+            return SendButtonDiagnostic::SnapshotUnavailable;
+        };
+        if now
+            .duration_since(observed_at)
+            .map_or(true, |age| age > SEND_BUTTON_SNAPSHOT_MAX_AGE)
+        {
+            return SendButtonDiagnostic::SnapshotStale;
+        }
+
+        match snapshot.state {
+            SendButtonSnapshotState::NotObserved | SendButtonSnapshotState::QueryFailed => {
+                SendButtonDiagnostic::SnapshotUnavailable
+            }
+            SendButtonSnapshotState::NotFound => SendButtonDiagnostic::ButtonNotFound,
+            SendButtonSnapshotState::Disabled => {
+                if snapshot
+                    .bounds
+                    .is_some_and(|bounds| bounds.contains(screen_x, screen_y))
+                {
+                    SendButtonDiagnostic::HitDisabledButton
+                } else {
+                    SendButtonDiagnostic::ButtonDisabled
+                }
+            }
+            SendButtonSnapshotState::StateUnavailable
+            | SendButtonSnapshotState::GeometryUnavailable => {
+                SendButtonDiagnostic::ButtonGeometryUnavailable
+            }
+            SendButtonSnapshotState::Enabled => {
+                if snapshot
+                    .bounds
+                    .is_some_and(|bounds| bounds.contains(screen_x, screen_y))
+                {
+                    SendButtonDiagnostic::HitEnabledButton
+                } else {
+                    SendButtonDiagnostic::ClickOutsideButton
+                }
+            }
+        }
     }
 }
 
@@ -326,7 +513,7 @@ fn inspect_supported_weixin_window(
     window_handle: isize,
     trust: ProcessTrust,
     observed_at: SystemTime,
-) -> PlatformResult<ChatContext> {
+) -> PlatformResult<(ChatContext, SendButtonSnapshot)> {
     with_automation(|automation| {
         let root = element_from_handle(automation, window_handle)?;
         let editor = find_by_automation_id_suffix(automation, &root, INPUT_AUTOMATION_ID)?;
@@ -350,7 +537,9 @@ fn inspect_supported_weixin_window(
             .map(|editor| is_editor_focused(automation, editor, &root))
             .unwrap_or(false);
 
-        Ok(ChatContext {
+        let send_button = find_send_button_snapshot(automation, &root, window_handle, observed_at);
+
+        Ok((ChatContext {
             window_handle,
             process_id: trust.process_id,
             process_path: trust.process_path,
@@ -363,7 +552,7 @@ fn inspect_supported_weixin_window(
             chat_title,
             generation: 0,
             observed_at: Some(observed_at),
-        })
+        }, send_button))
     })
 }
 
@@ -427,6 +616,55 @@ fn find_by_class_name_suffix(
     })
 }
 
+fn find_send_button_snapshot(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    window_handle: isize,
+    observed_at: SystemTime,
+) -> SendButtonSnapshot {
+    let base = SendButtonSnapshot {
+        window_handle,
+        observed_at: Some(observed_at),
+        state: SendButtonSnapshotState::NotFound,
+        bounds: None,
+    };
+    let button = match find_descendant(automation, root, is_named_send_button) {
+        Ok(Some(button)) => button,
+        Ok(None) => return base,
+        Err(_) => {
+            return SendButtonSnapshot {
+                state: SendButtonSnapshotState::QueryFailed,
+                ..base
+            };
+        }
+    };
+
+    // SAFETY: property reads are synchronous calls on a live UI Automation element proxy.
+    let enabled = match unsafe { button.CurrentIsEnabled() } {
+        Ok(value) => value.as_bool(),
+        Err(_) => {
+            return SendButtonSnapshot {
+                state: SendButtonSnapshotState::StateUnavailable,
+                ..base
+            };
+        }
+    };
+    // SAFETY: the bounding rectangle is copied immediately and no COM proxy escapes this scope.
+    let bounds = unsafe { button.CurrentBoundingRectangle() }
+        .ok()
+        .and_then(ScreenRect::from_windows_rect);
+    let state = if enabled {
+        if bounds.is_some() {
+            SendButtonSnapshotState::Enabled
+        } else {
+            SendButtonSnapshotState::GeometryUnavailable
+        }
+    } else {
+        SendButtonSnapshotState::Disabled
+    };
+    SendButtonSnapshot { state, bounds, ..base }
+}
+
 fn find_descendant(
     automation: &IUIAutomation,
     root: &IUIAutomationElement,
@@ -475,6 +713,14 @@ fn read_name(element: &IUIAutomationElement) -> Option<String> {
         .ok()
         .map(|value| value.to_string())
         .filter(|value| !value.trim().is_empty())
+}
+
+fn is_named_send_button(element: &IUIAutomationElement) -> bool {
+    // SAFETY: property access is a synchronous COM call on a live element proxy.
+    let is_button = unsafe { element.CurrentControlType() }
+        .map(|control_type| control_type == UIA_ButtonControlTypeId)
+        .unwrap_or(false);
+    is_button && read_name(element).as_deref() == Some("发送")
 }
 
 fn is_editor_focused(
@@ -621,6 +867,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::{
+        SendButtonDiagnostic, SendButtonSnapshot, SendButtonSnapshotState, ScreenRect,
         TRUSTED_WEIXIN_PATH, WindowsContextProvider, normalize_draft_preview,
         resolved_trusted_weixin_path,
     };
@@ -720,5 +967,61 @@ mod tests {
             None
         );
         assert_eq!(resolved_trusted_weixin_path(Some("Weixin.exe")), None);
+    }
+
+    #[test]
+    fn send_button_diagnostic_uses_content_free_audit_codes() {
+        assert_eq!(
+            SendButtonDiagnostic::HitEnabledButton.audit_result(),
+            "button-hit-enabled"
+        );
+        assert_eq!(
+            SendButtonDiagnostic::ClickOutsideButton.audit_result(),
+            "point-outside-send-button"
+        );
+    }
+
+    #[test]
+    fn cached_send_button_hit_is_fast_and_rejects_stale_or_wrong_window_points() {
+        let provider = WindowsContextProvider::new();
+        let observed_at = SystemTime::now();
+        provider.publish_with_button(
+            recognized_chat(observed_at),
+            SendButtonSnapshot {
+                window_handle: 42,
+                observed_at: Some(observed_at),
+                state: SendButtonSnapshotState::Enabled,
+                bounds: Some(ScreenRect {
+                    left: 100,
+                    top: 200,
+                    right: 180,
+                    bottom: 240,
+                }),
+            },
+            0,
+        );
+
+        assert!(
+            provider
+                .classify_send_button_click(42, 120, 220, observed_at)
+                .should_intercept()
+        );
+        assert_eq!(
+            provider.classify_send_button_click(42, 90, 220, observed_at),
+            SendButtonDiagnostic::ClickOutsideButton
+        );
+        assert_eq!(
+            provider.classify_send_button_click(99, 120, 220, observed_at),
+            SendButtonDiagnostic::SnapshotWindowMismatch
+        );
+        assert_eq!(
+            provider.classify_send_button_click(
+                42,
+                120,
+                220,
+                observed_at + Duration::from_millis(251)
+            ),
+            SendButtonDiagnostic::SnapshotStale
+        );
     }
 }

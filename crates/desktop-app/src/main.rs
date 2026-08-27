@@ -21,17 +21,18 @@ use std::{
 };
 use uuid::Uuid;
 use wechat_send_guard_core::{
-    AppSettings, ChatContext, ChatTargetKind, ConfirmationMode, ConfirmationOutcome,
+    AppSettings, AuditEntry, ChatContext, ChatTargetKind, ConfirmationMode, ConfirmationOutcome,
     FileSettingsStore, PendingConfirmation, ProtectedChat, RuleMode, UnknownContextBehavior,
     export_protected_chats, import_protected_chats, normalize_title,
 };
 use wechat_send_guard_desktop_ui::{
     AppTray, AppWindow, ChatRow, ConfirmationWindow, SlintAboutWindow,
 };
-use wechat_send_guard_platform_api::{ChatContextProvider, StartupRegistration};
+use wechat_send_guard_platform_api::{AuditLog, ChatContextProvider, StartupRegistration};
 use wechat_send_guard_platform_windows::{
-    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog, WindowsContextMonitor,
-    WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsStartupRegistration,
+    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog,
+    WindowsContextMonitor, WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook,
+    WindowsMouseHook, WindowsStartupRegistration,
     activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
     enable_high_dpi_awareness, is_valid_weixin_executable_path, path_matches_trusted_weixin,
     select_protected_chat_export, select_protected_chat_import,
@@ -268,12 +269,101 @@ fn run() -> Result<(), Box<dyn Error>> {
     }));
     keyboard_hook.start()?;
 
+    let mut mouse_hook = WindowsMouseHook::new(injector.marker());
+    let mouse_hook_service = service.clone();
+    let mouse_hook_provider = provider.clone();
+    let mouse_hook_audit = audit.clone();
+    let mouse_window_weak = main_window.as_weak();
+    mouse_hook.set_left_down_handler(Arc::new(move |click| {
+        let now = SystemTime::now();
+        let context = mouse_hook_provider.current();
+        if context.window_handle != click.foreground_window || !context.is_trusted_weixin {
+            return false;
+        }
+
+        let diagnosis = mouse_hook_provider.classify_send_button_click(
+            click.foreground_window,
+            click.screen_x,
+            click.screen_y,
+            now,
+        );
+        mouse_hook_audit.write(AuditEntry::new(
+            now,
+            None,
+            "send-button-diagnostic",
+            diagnosis.audit_result(),
+        ));
+        if !diagnosis.should_intercept() {
+            return false;
+        }
+
+        match mouse_hook_service.handle_send_button_click(click.foreground_window, now) {
+            EnterHandling::PassThrough => {
+                mouse_hook_audit.write(AuditEntry::new(
+                    now,
+                    None,
+                    "send-button-diagnostic",
+                    "button-hit-pass-through",
+                ));
+                false
+            }
+            EnterHandling::SuppressBlockedUnknown => {
+                mouse_hook_audit.write(AuditEntry::new(
+                    now,
+                    None,
+                    "send-button-diagnostic",
+                    "button-blocked-unknown",
+                ));
+                true
+            }
+            EnterHandling::SuppressWhileConfirmationActive => {
+                mouse_hook_audit.write(AuditEntry::new(
+                    now,
+                    None,
+                    "send-button-diagnostic",
+                    "button-confirmation-already-active",
+                ));
+                true
+            }
+            EnterHandling::SuppressAndConfirm(pending) => {
+                mouse_hook_audit.write(AuditEntry::new(
+                    now,
+                    None,
+                    "send-button-diagnostic",
+                    "button-confirmation-requested",
+                ));
+                let attempt_id = pending.attempt_id.to_string();
+                if mouse_window_weak
+                    .upgrade_in_event_loop(move |window| {
+                        window.invoke_confirmation_requested(attempt_id.into());
+                    })
+                    .is_err()
+                {
+                    let _ = mouse_hook_service.complete_confirmation(
+                        &pending,
+                        ConfirmationOutcome::Cancelled,
+                        SystemTime::now(),
+                    );
+                }
+                true
+            }
+        }
+    }));
+    mouse_hook.start()?;
+    audit.write(AuditEntry::new(
+        SystemTime::now(),
+        None,
+        "send-button-diagnostic",
+        "interceptor-ready",
+    ));
+
     let _ = tray.show();
     if !start_in_background {
         main_window.show()?;
     }
     slint::run_event_loop()?;
 
+    mouse_hook.stop();
     keyboard_hook.stop();
     context_monitor.stop();
     status_timer.stop();
@@ -517,6 +607,10 @@ fn bind_window_callbacks(
         move |_| mark_unsaved(&main_window_weak)
     });
     main_window.on_keyboard_enter_toggled({
+        let main_window_weak = main_window_weak.clone();
+        move |_| mark_unsaved(&main_window_weak)
+    });
+    main_window.on_send_button_toggled({
         let main_window_weak = main_window_weak.clone();
         move |_| mark_unsaved(&main_window_weak)
     });
@@ -905,6 +999,7 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
     window.set_timeout_seconds(settings.confirmation.timeout_seconds.to_string().into());
     window.set_intercept_keyboard_enter(settings.intercept_keyboard_enter);
     window.set_intercept_numpad_enter(settings.intercept_numpad_enter);
+    window.set_intercept_send_button(settings.intercept_send_button);
     window.set_unknown_context_behavior(unknown_behavior_to_ui(settings.unknown_context_behavior));
     window.set_start_with_windows(settings.start_with_windows);
     window.set_log_retention_days(settings.log_retention_days.to_string().into());
@@ -977,7 +1072,7 @@ fn save_form_settings(window: &AppWindow, controller: &Rc<RefCell<Controller>>) 
             let selected = window.get_selected_chat_id().to_string();
             drop(controller);
             render_settings(window, &settings, Some(&selected));
-            set_save_status(window, "设置已保存并即时生效", false);
+            set_save_status(window, "设置已保存；已支持的策略即时生效", false);
         }
         Err(error) => set_save_status(window, error, true),
     }
@@ -1000,6 +1095,7 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
     settings.intercept_keyboard_enter = window.get_intercept_keyboard_enter();
     settings.intercept_numpad_enter =
         settings.intercept_keyboard_enter && window.get_intercept_numpad_enter();
+    settings.intercept_send_button = window.get_intercept_send_button();
     settings.shift_enter_pass_through = true;
     settings.start_with_windows = window.get_start_with_windows();
     settings.log_retention_days =
