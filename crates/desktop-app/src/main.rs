@@ -44,6 +44,7 @@ const APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const CONFIRMATION_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const HOLD_TICK_INTERVAL: Duration = Duration::from_millis(20);
+const ADD_CURRENT_CHAT_CONTEXT_MAX_AGE: Duration = Duration::from_secs(5);
 
 type ActiveConfirmationSlot = Rc<RefCell<Option<ActiveConfirmation>>>;
 type ActiveConfirmationWeak = RcWeak<RefCell<Option<ActiveConfirmation>>>;
@@ -1015,12 +1016,16 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
 
 fn add_current_chat(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     let mut controller = controller.borrow_mut();
-    let context = match controller.provider.refresh_now() {
-        Ok(context) => context,
-        Err(error) => {
-            set_save_status(window, format!("无法读取当前会话：{error}"), true);
-            return;
-        }
+    let Some(context) = controller
+        .provider
+        .recent_recognized_chat(ADD_CURRENT_CHAT_CONTEXT_MAX_AGE)
+    else {
+        set_save_status(
+            window,
+            "请先在微信中打开可识别的群聊或联系人，并将光标放入消息输入框后，在 5 秒内加入。",
+            true,
+        );
+        return;
     };
     let Some(target_kind) = context.target_kind() else {
         set_save_status(

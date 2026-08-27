@@ -44,6 +44,7 @@ const FOCUS_RECOVERY_RETRY: Duration = Duration::from_millis(30);
 #[derive(Debug)]
 pub struct WindowsContextProvider {
     current: RwLock<ChatContext>,
+    last_recognized_chat: RwLock<Option<ChatContext>>,
     trusted_executable: RwLock<TrustedExecutable>,
 }
 
@@ -69,6 +70,7 @@ impl WindowsContextProvider {
     pub fn new_with_trusted_weixin_executable_path(configured_path: Option<&str>) -> Self {
         Self {
             current: RwLock::new(ChatContext::default()),
+            last_recognized_chat: RwLock::new(None),
             trusted_executable: RwLock::new(TrustedExecutable {
                 path: resolved_trusted_weixin_path(configured_path),
                 generation: 0,
@@ -87,8 +89,19 @@ impl WindowsContextProvider {
             trusted.generation
         };
 
+        *write_unpoisoned(&self.last_recognized_chat) = None;
         self.publish(ChatContext::default(), generation);
         let _ = self.refresh_foreground();
+    }
+
+    /// Returns the most recent usable Weixin chat observed before another window took focus.
+    /// This is intended only for configuration actions that necessarily activate this app, never
+    /// for authorizing a send.
+    pub fn recent_recognized_chat(&self, maximum_age: Duration) -> Option<ChatContext> {
+        let context = read_unpoisoned(&self.last_recognized_chat).clone()?;
+        let observed_at = context.observed_at?;
+        let age = SystemTime::now().duration_since(observed_at).ok()?;
+        (age <= maximum_age && is_recognized_chat(&context)).then_some(context)
     }
 
     pub fn refresh_foreground(&self) -> ChatContext {
@@ -130,6 +143,10 @@ impl WindowsContextProvider {
             current.generation.saturating_add(1)
         };
         *current = candidate.clone();
+        if candidate.is_trusted_weixin {
+            let mut last_recognized_chat = write_unpoisoned(&self.last_recognized_chat);
+            *last_recognized_chat = is_recognized_chat(&candidate).then(|| candidate.clone());
+        }
         candidate
     }
 
@@ -194,6 +211,14 @@ fn resolved_trusted_weixin_path(configured_path: Option<&str>) -> Option<PathBuf
             is_valid_weixin_executable_path(&path).then_some(path)
         }
     }
+}
+
+fn is_recognized_chat(context: &ChatContext) -> bool {
+    context.is_trusted_weixin
+        && context.is_compatibility_available
+        && context.is_message_editor_focused
+        && context.is_known_chat()
+        && !context.normalized_chat_title().is_empty()
 }
 
 impl ChatContextProvider for WindowsContextProvider {
@@ -595,8 +620,29 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TRUSTED_WEIXIN_PATH, normalize_draft_preview, resolved_trusted_weixin_path};
-    use std::path::PathBuf;
+    use super::{
+        TRUSTED_WEIXIN_PATH, WindowsContextProvider, normalize_draft_preview,
+        resolved_trusted_weixin_path,
+    };
+    use std::{
+        path::PathBuf,
+        time::{Duration, SystemTime},
+    };
+    use wechat_send_guard_core::ChatContext;
+
+    fn recognized_chat(observed_at: SystemTime) -> ChatContext {
+        ChatContext {
+            window_handle: 42,
+            process_id: 7,
+            is_trusted_weixin: true,
+            is_compatibility_available: true,
+            is_message_editor_focused: true,
+            is_group_chat: true,
+            chat_title: Some("测试群".to_owned()),
+            observed_at: Some(observed_at),
+            ..ChatContext::default()
+        }
+    }
 
     #[test]
     fn draft_preview_is_trimmed_bounded_and_ephemeral_without_uia() {
@@ -608,6 +654,58 @@ mod tests {
         assert_eq!(
             normalize_draft_preview("a".repeat(241)),
             Some(format!("{}...", "a".repeat(240)))
+        );
+    }
+
+    #[test]
+    fn recent_recognized_chat_survives_the_settings_window_taking_focus() {
+        let provider = WindowsContextProvider::new();
+        provider.publish(recognized_chat(SystemTime::now()), 0);
+        provider.publish(
+            ChatContext {
+                window_handle: 99,
+                ..ChatContext::default()
+            },
+            0,
+        );
+
+        let remembered = provider
+            .recent_recognized_chat(Duration::from_secs(5))
+            .expect("the last usable Weixin chat should remain available briefly");
+        assert_eq!(remembered.normalized_chat_title(), "测试群");
+    }
+
+    #[test]
+    fn recent_recognized_chat_expires_and_is_cleared_by_an_unfocused_weixin_view() {
+        let provider = WindowsContextProvider::new();
+        provider.publish(
+            recognized_chat(SystemTime::now() - Duration::from_secs(6)),
+            0,
+        );
+        assert!(
+            provider
+                .recent_recognized_chat(Duration::from_secs(5))
+                .is_none()
+        );
+
+        provider.publish(recognized_chat(SystemTime::now()), 0);
+        provider.publish(
+            ChatContext {
+                window_handle: 42,
+                process_id: 7,
+                is_trusted_weixin: true,
+                is_compatibility_available: true,
+                is_group_chat: true,
+                chat_title: Some("测试群".to_owned()),
+                observed_at: Some(SystemTime::now()),
+                ..ChatContext::default()
+            },
+            0,
+        );
+        assert!(
+            provider
+                .recent_recognized_chat(Duration::from_secs(5))
+                .is_none()
         );
     }
 
