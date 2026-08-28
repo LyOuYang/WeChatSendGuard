@@ -2,7 +2,7 @@
 
 ## 版本规则
 
-`VERSION` 是唯一的产品版本来源，使用 SemVer：`主版本.次版本.修订版本`。每个 Rust 包和 Windows 安装器元数据必须与它一致。应用版本与设置的 `schemaVersion` 独立；当前 `1.1.0` 对应 `schemaVersion: 2`，只有存在经过记录的设置迁移时才升级配置架构版本。
+`VERSION` 是唯一的产品版本来源，使用 SemVer：`主版本.次版本.修订版本`。每个 Rust 包和 Windows 安装器元数据必须与它一致。应用版本与设置的 `schemaVersion` 独立；当前 `1.1.3` 对应 `schemaVersion: 2`，只有存在经过记录的设置迁移时才升级配置架构版本。
 
 ## 本地打包
 

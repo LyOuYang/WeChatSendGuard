@@ -264,7 +264,7 @@ fn unrelated_application_enters_are_not_written_to_the_diagnostic_log() {
 }
 
 #[test]
-fn stale_production_snapshot_is_suppressed_without_recording_any_input() {
+fn stale_production_snapshot_requests_confirmation_then_rejects_stale_revalidation() {
     let mut context = protected_context("工作群");
     context.observed_at = Some(fixed_now() - Duration::from_millis(251));
     let platform = Arc::new(FakeChatContextProvider::new(context));
@@ -283,13 +283,86 @@ fn stale_production_snapshot_is_suppressed_without_recording_any_input() {
         audit.clone(),
     );
 
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_physical_enter(physical_enter(), fixed_now())
+    else {
+        panic!("a stale known protected chat should still surface confirmation");
+    };
+    assert!(matches!(
+        service.complete_confirmation(
+            &pending,
+            ConfirmationOutcome::Confirmed,
+            fixed_now() + Duration::from_secs(1),
+        ),
+        CompletionResult::NotInjected { .. }
+    ));
+    assert!(injector.sent().is_empty());
+    assert_eq!(
+        audit.entries().last().expect("audit entry").result,
+        "cancelled-stale-revalidation"
+    );
+}
+
+#[test]
+fn stale_snapshot_cannot_pass_through_an_old_unprotected_chat() {
+    let mut context = protected_context("普通群");
+    context.observed_at = Some(fixed_now() - Duration::from_millis(251));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(context)),
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
     assert_eq!(
         service.handle_physical_enter(physical_enter(), fixed_now()),
         EnterHandling::SuppressBlockedUnknown
     );
-    assert!(injector.sent().is_empty());
     assert_eq!(
         audit.entries().last().expect("audit entry").result,
         "stale-context"
+    );
+}
+
+#[test]
+fn trusted_but_incomplete_context_consumes_enter_until_recognition_recovers() {
+    let context = ChatContext {
+        window_handle: 42,
+        is_trusted_weixin: true,
+        is_compatibility_available: false,
+        ..ChatContext::default()
+    };
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(context)),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), fixed_now()),
+        EnterHandling::SuppressBlockedUnknown
+    );
+}
+
+#[test]
+fn send_button_candidate_with_incomplete_context_is_consumed() {
+    let context = ChatContext {
+        window_handle: 42,
+        is_trusted_weixin: true,
+        is_compatibility_available: false,
+        ..ChatContext::default()
+    };
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(context)),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    assert_eq!(
+        service.handle_send_button_click(42, fixed_now()),
+        EnterHandling::SuppressBlockedUnknown
     );
 }

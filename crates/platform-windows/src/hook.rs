@@ -158,6 +158,7 @@ struct MouseHookState {
     marker: usize,
     handler: RwLock<Option<Arc<MouseDownHandler>>>,
     suppress_left_button_up: AtomicBool,
+    suppressed_window: AtomicIsize,
 }
 
 /// Low-level mouse hook used by the send-button strategy. The callback is deliberately limited to
@@ -231,6 +232,7 @@ impl WindowsMouseHook {
         self.state
             .suppress_left_button_up
             .store(false, Ordering::Release);
+        self.state.suppressed_window.store(0, Ordering::Release);
         if self.native_hook != 0 {
             // SAFETY: this value was returned by SetWindowsHookExW and is unhooked at most once.
             let _ = unsafe { UnhookWindowsHookEx(HHOOK(self.native_hook as _)) };
@@ -306,11 +308,23 @@ unsafe extern "system" fn low_level_mouse_proc(
             let data = unsafe { (lparam.0 as *const MSLLHOOKSTRUCT).read_unaligned() };
             match wparam.0 as u32 {
                 WM_LBUTTONDOWN if handle_left_mouse_down(&state, data) => {
+                    // Pair a consumed down event only with the up event that still belongs to
+                    // the same foreground window. This avoids swallowing an unrelated click-up
+                    // if focus changes while a confirmation window is being shown.
+                    let foreground_window = unsafe { GetForegroundWindow().0 as isize };
+                    state
+                        .suppressed_window
+                        .store(foreground_window, Ordering::Release);
                     state.suppress_left_button_up.store(true, Ordering::Release);
                     return LRESULT(1);
                 }
                 WM_LBUTTONUP if state.suppress_left_button_up.swap(false, Ordering::AcqRel) => {
-                    return LRESULT(1);
+                    let suppressed_window = state.suppressed_window.swap(0, Ordering::AcqRel);
+                    // SAFETY: GetForegroundWindow has no borrowed inputs and returns an owned
+                    // value handle.
+                    if unsafe { GetForegroundWindow().0 as isize } == suppressed_window {
+                        return LRESULT(1);
+                    }
                 }
                 _ => {}
             }

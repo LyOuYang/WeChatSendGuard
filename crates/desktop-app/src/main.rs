@@ -99,6 +99,11 @@ impl Controller {
             .save(settings.clone())
             .map_err(|error| format!("无法保存设置：{error}"))?;
 
+        self.provider.configure_observation(
+            settings.enabled,
+            settings.intercept_keyboard_enter,
+            settings.intercept_send_button,
+        );
         self.provider
             .set_trusted_weixin_executable_path(settings.trusted_weixin_executable_path.as_deref());
         self.service.update_settings(settings.clone());
@@ -129,6 +134,11 @@ impl Controller {
             .save(settings.clone())
             .map_err(|error| format!("无法保存发送守护状态：{error}"))?;
 
+        self.provider.configure_observation(
+            settings.enabled,
+            settings.intercept_keyboard_enter,
+            settings.intercept_send_button,
+        );
         self.service.update_settings(settings.clone());
         self.settings = settings;
         Ok(())
@@ -202,6 +212,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         WindowsContextProvider::new_with_trusted_weixin_executable_path(
             settings.trusted_weixin_executable_path.as_deref(),
         ),
+    );
+    provider.configure_observation(
+        settings.enabled,
+        settings.intercept_keyboard_enter,
+        settings.intercept_send_button,
     );
     let audit = Arc::new(WindowsAuditLog::new(
         default_audit_log_directory(&local_app_data),
@@ -287,6 +302,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut keyboard_hook = WindowsKeyboardHook::new(injector.marker());
     let main_window_weak = main_window.as_weak();
     let hook_service = service.clone();
+    let keyboard_hook_provider = provider.clone();
     keyboard_hook.set_key_down_handler(Arc::new(move |stroke| {
         if stroke.key == KeyboardKey::Escape {
             let Some(pending) = hook_service.current_pending_confirmation() else {
@@ -307,6 +323,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             return true;
         }
 
+        // Keep the keyboard hook installed for lifecycle simplicity, but make the hot path
+        // effectively inert when Enter interception is disabled. Escape remains handled above so
+        // an already-open confirmation can always be cancelled safely.
+        if !keyboard_hook_provider.keyboard_enter_observation_enabled() {
+            return false;
+        }
+
         let now = SystemTime::now();
         let handling = hook_service.handle_physical_enter(
             PhysicalEnter {
@@ -320,8 +343,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
         match handling {
             EnterHandling::PassThrough => false,
-            EnterHandling::SuppressBlockedUnknown
-            | EnterHandling::SuppressWhileConfirmationActive => true,
+            EnterHandling::SuppressBlockedUnknown => true,
+            EnterHandling::SuppressWhileConfirmationActive => true,
             EnterHandling::SuppressAndConfirm(pending) => {
                 let attempt_id = pending.attempt_id.to_string();
                 if main_window_weak
@@ -350,19 +373,27 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mouse_hook_audit = audit.clone();
     let mouse_window_weak = main_window.as_weak();
     mouse_hook.set_left_down_handler(Arc::new(move |click| {
-        let now = SystemTime::now();
-        let trace_id = Uuid::new_v4();
-        let context = mouse_hook_provider.current();
-        if context.window_handle != click.foreground_window || !context.is_trusted_weixin {
+        // Keep the process-wide hook inert when this strategy is disabled. This atomic read
+        // avoids context locks, UIA work, and diagnostics for ordinary clicks.
+        if !mouse_hook_provider.send_button_observation_enabled() {
             return false;
         }
-
-        let diagnosis = mouse_hook_provider.classify_send_button_click(
-            click.foreground_window,
-            click.screen_x,
-            click.screen_y,
-            now,
-        );
+        let now = SystemTime::now();
+        let trace_id = Uuid::new_v4();
+        let (diagnosis, should_intercept) = mouse_hook_provider
+            .diagnose_and_gate_send_button_click(
+                click.foreground_window,
+                click.screen_x,
+                click.screen_y,
+                now,
+            );
+        if matches!(
+            diagnosis,
+            wechat_send_guard_platform_windows::SendButtonDiagnostic::UntrustedWindow
+                | wechat_send_guard_platform_windows::SendButtonDiagnostic::SnapshotWindowMismatch
+        ) {
+            return false;
+        }
         mouse_hook_audit.write(
             AuditEntry::new(
                 now,
@@ -373,8 +404,20 @@ fn run() -> Result<(), Box<dyn Error>> {
             .with_trace_id(trace_id)
             .with_details([("source", "send-button")]),
         );
-        if !diagnosis.should_intercept() {
+        if !should_intercept {
             return false;
+        }
+        if !diagnosis.should_intercept() {
+            mouse_hook_audit.write(
+                AuditEntry::new(
+                    now,
+                    None,
+                    "send-button-diagnostic",
+                    "button-fallback-intercepted",
+                )
+                .with_trace_id(trace_id)
+                .with_details([("source", "send-button")]),
+            );
         }
 
         match mouse_hook_service.handle_send_button_click_with_trace(

@@ -14,9 +14,10 @@ use wechat_send_guard_core::{
 };
 use wechat_send_guard_platform_api::{AuditLog, InputInjector, SendTargetPlatform};
 
-/// The Windows foreground monitor publishes a context every 75 ms. A key callback may only
-/// make a send decision from a recent snapshot of the same foreground window. Keeping this
-/// bound small makes a just-switched chat fail closed while preserving a responsive hook path.
+/// Input callbacks consume a completed platform snapshot. The platform adapter is responsible
+/// for keeping it fresh; this bound prevents a snapshot from authorizing a target after a long
+/// recognition stall while still allowing a short UIA/layout rebuild to be confirmed and
+/// revalidated before injection.
 const MAX_CONTEXT_AGE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,10 +115,7 @@ impl GuardService {
             return EnterHandling::PassThrough;
         }
 
-        if context.window_handle != enter.foreground_window
-            || !context.is_compatibility_available
-            || !context.is_message_editor_focused
-        {
+        if context.window_handle != enter.foreground_window {
             self.write_trace(
                 None,
                 trace_id,
@@ -129,12 +127,44 @@ impl GuardService {
             return EnterHandling::PassThrough;
         }
 
-        if context_is_stale(&context, now) {
+        if !context.is_compatibility_available {
+            // A trusted Weixin window with an incomplete UIA snapshot is still a possible send
+            // target. Passing the physical Enter through here would reintroduce the exact
+            // fail-open path seen during three-pane layout rebuilds, so consume it until the
+            // monitor publishes a usable snapshot.
+            self.write_trace(
+                None,
+                trace_id,
+                "send-blocked",
+                "context-unavailable",
+                source,
+                now,
+            );
+            return EnterHandling::SuppressBlockedUnknown;
+        }
+        if !context.is_message_editor_focused {
+            // The editor is known but another Weixin control owns focus. Enter is not a message
+            // send in that state, so preserve the client's normal behavior.
+            self.write_trace(
+                None,
+                trace_id,
+                "send-decision",
+                "pass-through-context",
+                source,
+                now,
+            );
+            return EnterHandling::PassThrough;
+        }
+
+        let stale = context_is_stale(&context, now);
+        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
+        if stale && !decision.should_suppress() {
+            // A stale snapshot cannot authorize a pass-through decision: the user may have
+            // switched to a protected chat since the last observation. Consume this Enter until
+            // the monitor catches up instead of allowing a native send through the race window.
             self.write_trace(None, trace_id, "send-blocked", "stale-context", source, now);
             return EnterHandling::SuppressBlockedUnknown;
         }
-
-        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
         if !decision.should_suppress() {
             self.write_trace(
                 None,
@@ -147,15 +177,57 @@ impl GuardService {
             return EnterHandling::PassThrough;
         }
         if decision.kind == ProtectionDecisionKind::BlockUnknown {
-            self.write_trace(None, trace_id, "send-blocked", "unknown-chat", source, now);
+            self.write_trace(
+                None,
+                trace_id,
+                "send-blocked",
+                if stale {
+                    "stale-context"
+                } else {
+                    "unknown-chat"
+                },
+                source,
+                now,
+            );
             return EnterHandling::SuppressBlockedUnknown;
         }
 
         let timeout = Duration::from_secs(u64::from(settings.confirmation.timeout_seconds));
+        if stale {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-blocked",
+                "stale-context-confirmation",
+                source,
+                now,
+            );
+        }
+        self.begin_confirmation(ConfirmationRequest {
+            context,
+            decision,
+            is_numpad_enter: enter.is_numpad_enter,
+            trace_id,
+            source,
+            timeout,
+            now,
+        })
+    }
+
+    fn begin_confirmation(&self, request: ConfirmationRequest<'_>) -> EnterHandling {
+        let ConfirmationRequest {
+            context,
+            decision,
+            is_numpad_enter,
+            trace_id,
+            source,
+            timeout,
+            now,
+        } = request;
         match self.state_machine.try_begin(
             context,
             decision,
-            enter.is_numpad_enter,
+            is_numpad_enter,
             trace_id,
             timeout,
             now,
@@ -222,11 +294,7 @@ impl GuardService {
         }
 
         let context = self.platform.current();
-        if context.window_handle != foreground_window
-            || !context.is_trusted_weixin
-            || !context.is_compatibility_available
-            || !context.is_message_editor_focused
-        {
+        if context.window_handle != foreground_window {
             self.write_trace(
                 None,
                 trace_id,
@@ -238,7 +306,40 @@ impl GuardService {
             return EnterHandling::PassThrough;
         }
 
-        if context_is_stale(&context, now) {
+        if !context.is_trusted_weixin {
+            // The platform invokes this method only after a candidate was identified in the same
+            // foreground window. If recognition drops between the diagnostic and this read, keep
+            // the candidate blocked instead of handing a race window to Weixin.
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-blocked",
+                "context-unavailable",
+                source,
+                now,
+            );
+            return EnterHandling::SuppressBlockedUnknown;
+        }
+
+        // The platform has already identified a click in the send-button candidate area. If the
+        // companion context fields are temporarily unavailable, fail closed for this candidate
+        // instead of handing the native click to Weixin. Clearly unrelated windows still pass
+        // through above.
+        if !context.is_compatibility_available || !context.is_message_editor_focused {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-blocked",
+                "context-unavailable",
+                source,
+                now,
+            );
+            return EnterHandling::SuppressBlockedUnknown;
+        }
+
+        let stale = context_is_stale(&context, now);
+        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
+        if stale && !decision.should_suppress() {
             self.write_trace(
                 None,
                 trace_id,
@@ -249,8 +350,6 @@ impl GuardService {
             );
             return EnterHandling::SuppressBlockedUnknown;
         }
-
-        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
         if !decision.should_suppress() {
             self.write_trace(
                 None,
@@ -275,34 +374,25 @@ impl GuardService {
         }
 
         let timeout = Duration::from_secs(u64::from(settings.confirmation.timeout_seconds));
-        match self
-            .state_machine
-            .try_begin(context, decision, false, trace_id, timeout, now)
-        {
-            Some(pending) => {
-                *lock_unpoisoned(&self.active_confirmation) = Some(pending.attempt_id);
-                self.write_trace(
-                    pending.decision.protected_chat.as_ref().map(|chat| chat.id),
-                    pending.trace_id,
-                    "confirmation",
-                    "requested",
-                    source,
-                    now,
-                );
-                EnterHandling::SuppressAndConfirm(Box::new(pending))
-            }
-            None => {
-                self.write_trace(
-                    None,
-                    trace_id,
-                    "send-button-blocked",
-                    "confirmation-already-active",
-                    source,
-                    now,
-                );
-                EnterHandling::SuppressWhileConfirmationActive
-            }
+        if stale {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-blocked",
+                "stale-context-confirmation",
+                source,
+                now,
+            );
         }
+        self.begin_confirmation(ConfirmationRequest {
+            context,
+            decision,
+            is_numpad_enter: false,
+            trace_id,
+            source,
+            timeout,
+            now,
+        })
     }
 
     /// Reads an optional preview after suppression, never on the keyboard-hook path. The
@@ -378,6 +468,24 @@ impl GuardService {
                 };
             }
         };
+
+        // A platform adapter may return a structurally matching snapshot even while its
+        // recognition worker is stalled. Do not let that snapshot authorize injection; the final
+        // observation must itself be recent (test doubles without timestamps remain supported).
+        if context_is_stale(&revalidated_context, now) {
+            self.state_machine.cancel_active();
+            self.clear_active_confirmation(pending.attempt_id);
+            self.write_audit(
+                pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
+                "send",
+                "cancelled-stale-revalidation",
+                now,
+            );
+            return CompletionResult::NotInjected {
+                reason: "The target context was still stale after confirmation.".to_owned(),
+            };
+        }
 
         let resolution = self.state_machine.resolve(
             pending.attempt_id,
@@ -534,6 +642,16 @@ impl GuardService {
                 .with_details([("source", source)]),
         );
     }
+}
+
+struct ConfirmationRequest<'a> {
+    context: ChatContext,
+    decision: wechat_send_guard_core::ProtectionDecision,
+    is_numpad_enter: bool,
+    trace_id: uuid::Uuid,
+    source: &'a str,
+    timeout: Duration,
+    now: SystemTime,
 }
 
 fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
