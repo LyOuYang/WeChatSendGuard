@@ -26,7 +26,7 @@ cargo run -p wechat-send-guard             # launch the desktop application
 .\packaging\windows\build-installer.ps1   # build and verify the x64 installer
 ```
 
-The installer requires Rust 1.88+, the Windows MSVC toolchain, and NSIS 3.x. `VERSION` is the single source of the product version; keep package and installer metadata aligned with it.
+The installer requires Rust 1.92+, the Windows MSVC toolchain, and NSIS 3.x. `VERSION` is the single source of the product version; keep package and installer metadata aligned with it.
 
 ## Coding Style & Naming Conventions
 

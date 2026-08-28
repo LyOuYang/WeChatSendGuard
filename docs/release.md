@@ -6,7 +6,7 @@
 
 ## 本地打包
 
-安装 Rust 1.88+、Windows MSVC 工具链和 NSIS 3.x 后，在仓库根目录执行：
+安装 Rust 1.92+、Windows MSVC 工具链和 NSIS 3.x 后，在仓库根目录执行：
 
 ```powershell
 .\packaging\windows\build-installer.ps1
