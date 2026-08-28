@@ -35,7 +35,7 @@ component NavItem inherits Rectangle {
         text: root.label;
         color: root.selected ? #059669 : (area.has-hover ? #0f172a : #475569);
         font-size: 13px;
-        font-weight: root.selected ? 600 : 400;
+        font-weight: root.selected ? 700 : 400;
         vertical-alignment: center;
         animate color { duration: 120ms; }
     }
@@ -72,7 +72,7 @@ component AppButton inherits Rectangle {
         text: root.label;
         color: root.primary ? #ffffff : (root.danger ? #dc2626 : #334155);
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 400;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -193,7 +193,7 @@ component ToggleLine inherits Rectangle {
         text: root.label;
         color: #1e293b;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 400;
         vertical-alignment: center;
     }
     Text {
@@ -235,7 +235,7 @@ component ModeCard inherits Rectangle {
         text: root.title;
         color: #0f172a;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 700;
     }
     Text {
         x: 14px;
@@ -264,6 +264,45 @@ component ModeCard inherits Rectangle {
             border-radius: 4px;
             background: root.selected ? (root.warning ? #d97706 : #07c160) : #00000000;
         }
+    }
+    area := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component ConfirmationModeOption inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> selected: false;
+    callback clicked();
+
+    height: 62px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.selected ? #07c160 : (area.has-hover ? #cbd5e1 : #e2e8f0);
+    background: root.selected ? #eaf8f1 : (area.has-hover ? #f8fafc : #ffffff);
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    Text {
+        x: 12px;
+        y: 8px;
+        width: parent.width - 24px;
+        height: 18px;
+        text: root.title;
+        color: root.selected ? #047857 : #1e293b;
+        font-size: 13px;
+        font-weight: 700;
+    }
+    Text {
+        x: 12px;
+        y: 28px;
+        width: parent.width - 24px;
+        height: 24px;
+        text: root.detail;
+        color: root.selected ? #047857 : #64748b;
+        font-size: 11px;
+        wrap: word-wrap;
     }
     area := TouchArea {
         clicked => { root.clicked(); }
@@ -312,7 +351,7 @@ component ChatListItem inherits Rectangle {
                 text: root.chat.kind-label;
                 color: root.chat.kind-label == "联系人" ? #047857 : #1d4ed8;
                 font-size: 11px;
-                font-weight: 500;
+                font-weight: 400;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -323,8 +362,8 @@ component ChatListItem inherits Rectangle {
             height: parent.height;
             text: root.chat.display-name;
             color: root.selected ? #0f172a : #1e293b;
-            font-size: 13.5px;
-            font-weight: root.selected ? 600 : 400;
+            font-size: 13px;
+            font-weight: root.selected ? 700 : 400;
             horizontal-alignment: left;
             vertical-alignment: center;
             overflow: elide;
@@ -365,12 +404,13 @@ export component AppWindow inherits Window {
     title: "WeChatSendGuard";
     icon: @image-url("../assets/tray.svg");
     width: 920px;
-    height: 640px;
+    height: 680px;
     no-frame: true;
     resize-border-width: 8px;
     background: #ffffff;
-    default-font-family: "Microsoft YaHei UI";
+    default-font-family: "Microsoft YaHei";
     default-font-size: 13px;
+    default-font-weight: 400;
 
     in-out property <int> active-page: 0;
     in-out property <bool> protection-enabled: true;
@@ -391,9 +431,17 @@ export component AppWindow inherits Window {
     in-out property <bool> intercept-send-button: true;
     in-out property <int> unknown-context-behavior: 0;
     in-out property <bool> start-with-windows: false;
+    in-out property <bool> auto-check-updates: true;
     in-out property <string> log-retention-days: "7";
     in-out property <string> weixin-executable-path: "";
     in-out property <string> application-version: "";
+    in-out property <string> log-directory: "";
+    in-out property <string> update-status-text: "尚未检查更新";
+    in-out property <bool> update-status-error: false;
+    in-out property <bool> update-available: false;
+    in-out property <string> latest-update-version: "";
+    in-out property <string> latest-update-notes: "";
+    in-out property <string> ignored-update-version: "";
     in-out property <bool> has-unsaved-settings: false;
     in-out property <string> save-status: "就绪";
     in-out property <bool> save-status-error: false;
@@ -413,8 +461,17 @@ export component AppWindow inherits Window {
     callback send-button-toggled(bool);
     callback unknown-context-selected(int);
     callback startup-toggled(bool);
+    callback auto-check-updates-toggled(bool);
     callback reset-weixin-executable-path();
     callback save-settings();
+    callback check-updates-requested();
+    callback automatic-update-found(string);
+    callback ignore-update-requested();
+    callback clear-ignored-update-requested();
+    callback download-update-requested();
+    callback open-log-directory-requested();
+    callback export-diagnostics-requested();
+    callback clear-logs-requested();
     callback minimize-requested();
     callback close-requested();
     callback title-bar-pressed();
@@ -468,7 +525,7 @@ export component AppWindow inherits Window {
                             text: "WeChatSendGuard";
                             color: #0f172a;
                             font-size: 14px;
-                            font-weight: 600;
+                            font-weight: 700;
                             vertical-alignment: center;
                         }
                         Text {
@@ -495,6 +552,11 @@ export component AppWindow inherits Window {
                     label: "通用设置";
                     selected: root.active-page == 2;
                     clicked => { root.active-page = 2; root.page-selected(2); }
+                }
+                NavItem {
+                    label: "关于";
+                    selected: root.active-page == 3;
+                    clicked => { root.active-page = 3; root.page-selected(3); }
                 }
                 Rectangle { vertical-stretch: 1; background: #00000000; }
                 Rectangle {
@@ -527,7 +589,7 @@ export component AppWindow inherits Window {
                         text: root.status-text;
                         color: #475569;
                         font-size: 11px;
-                        font-weight: 500;
+                        font-weight: 400;
                         vertical-alignment: center;
                         overflow: elide;
                     }
@@ -586,7 +648,7 @@ export component AppWindow inherits Window {
                                 text: "守护名单";
                                 color: #0f172a;
                                 font-size: 20px;
-                                font-weight: 600;
+                                font-weight: 700;
                             }
                             Rectangle { horizontal-stretch: 1; background: #00000000; }
                             ToggleLine {
@@ -598,7 +660,7 @@ export component AppWindow inherits Window {
                         }
                         Text {
                             height: 18px;
-                            text: "选择哪些会话在按下 Enter 后需要多一步确认。";
+                            text: "选择哪些联系人或群聊在发送前需要多一步确认。";
                             color: #6b7280;
                             font-size: 12px;
                         }
@@ -636,7 +698,7 @@ export component AppWindow inherits Window {
                                 HorizontalLayout {
                                     VerticalLayout {
                                         spacing: 2px;
-                                        Text { text: root.list-title; color: #0f172a; font-size: 14px; font-weight: 600; }
+                                        Text { text: root.list-title; color: #0f172a; font-size: 14px; font-weight: 700; }
                                         Text { text: root.list-description; color: #64748b; font-size: 12px; }
                                     }
                                     Rectangle { horizontal-stretch: 1; background: #00000000; }
@@ -713,47 +775,93 @@ export component AppWindow inherits Window {
                     background: #00000000;
                     VerticalLayout {
                         spacing: 14px;
-                        Text { text: "确认与拦截"; color: #0f172a; font-size: 20px; font-weight: 600; }
+                        Text { height: 26px; text: "确认与拦截"; color: #0f172a; font-size: 20px; font-weight: 700; }
                         Text { height: 20px; text: "二次确认只在规则命中时出现；Shift+Enter 始终放行。"; color: #64748b; font-size: 12px; }
                         Rectangle {
+                            height: 276px;
+                            vertical-stretch: 0;
                             border-radius: 9px;
                             border-width: 1px;
                             border-color: #e2e8f0;
                             background: #ffffff;
                             VerticalLayout {
                                 padding: 16px;
-                                spacing: 14px;
-                                Text { text: "确认方式"; color: #0f172a; font-size: 14px; font-weight: 600; }
+                                spacing: 10px;
+                                Text { height: 18px; text: "确认方式"; color: #0f172a; font-size: 14px; font-weight: 700; }
+                                Text { height: 18px; text: "选择命中守护名单后的继续方式；仅显示当前方式需要的设置。"; color: #64748b; font-size: 11px; }
                                 HorizontalLayout {
+                                    height: 62px;
+                                    vertical-stretch: 0;
                                     spacing: 8px;
-                                    AppButton { label: "长按确认"; primary: root.confirmation-mode == 1; clicked => { root.confirmation-mode = 1; root.confirmation-mode-selected(1); } }
-                                    AppButton { label: "单击确认"; primary: root.confirmation-mode == 0; clicked => { root.confirmation-mode = 0; root.confirmation-mode-selected(0); } }
-                                    AppButton { label: "输入确认词"; primary: root.confirmation-mode == 2; clicked => { root.confirmation-mode = 2; root.confirmation-mode-selected(2); } }
+                                    ConfirmationModeOption {
+                                        horizontal-stretch: 1;
+                                        title: "长按确认";
+                                        detail: "按住确认按钮 0.8 秒";
+                                        selected: root.confirmation-mode == 1;
+                                        clicked => { root.confirmation-mode = 1; root.confirmation-mode-selected(1); }
+                                    }
+                                    ConfirmationModeOption {
+                                        horizontal-stretch: 1;
+                                        title: "单击确认";
+                                        detail: "点击确认按钮即可发送";
+                                        selected: root.confirmation-mode == 0;
+                                        clicked => { root.confirmation-mode = 0; root.confirmation-mode-selected(0); }
+                                    }
+                                    ConfirmationModeOption {
+                                        horizontal-stretch: 1;
+                                        title: "输入确认词";
+                                        detail: "输入指定词后才能发送";
+                                        selected: root.confirmation-mode == 2;
+                                        clicked => { root.confirmation-mode = 2; root.confirmation-mode-selected(2); }
+                                    }
                                 }
+                                Rectangle {
+                                    height: 52px;
+                                    vertical-stretch: 0;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+                                    background: #f8fafc;
+                                    if (root.confirmation-mode == 1) : HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        Text { width: 72px; text: "长按时长"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                        InputField { width: 82px; value <=> root.hold-milliseconds; placeholder: "800"; edited => { root.settings-dirty(); } }
+                                        Text { width: 24px; text: "毫秒"; color: #475569; font-size: 12px; vertical-alignment: center; }
+                                        Text { horizontal-stretch: 1; text: "持续按住达到设定时长后才会发送。"; color: #64748b; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                    }
+                                    if (root.confirmation-mode == 0) : HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        Text { width: 72px; text: "单击确认"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                        Text { horizontal-stretch: 1; text: "点击“确认发送”即可继续，不需要额外输入。"; color: #64748b; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                    }
+                                    if (root.confirmation-mode == 2) : HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 8px;
+                                        Text { width: 72px; text: "确认词"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                        InputField { width: 132px; value <=> root.confirmation-phrase; placeholder: "确认发送"; edited => { root.settings-dirty(); } }
+                                        Text { horizontal-stretch: 1; text: "发送前必须完整输入该词。"; color: #64748b; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                    }
+                                }
+                                Rectangle { height: 1px; vertical-stretch: 0; background: #e2e8f0; }
                                 HorizontalLayout {
-                                    spacing: 12px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 5px;
-                                        Text { text: "长按时长（毫秒）"; color: #475569; font-size: 12px; }
-                                        InputField { value <=> root.hold-milliseconds; placeholder: "800"; edited => { root.settings-dirty(); } }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 5px;
-                                        Text { text: "确认词"; color: #475569; font-size: 12px; }
-                                        InputField { value <=> root.confirmation-phrase; placeholder: "确认发送"; edited => { root.settings-dirty(); } }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 5px;
-                                        Text { text: "自动取消（秒）"; color: #475569; font-size: 12px; }
-                                        InputField { value <=> root.timeout-seconds; placeholder: "10"; edited => { root.settings-dirty(); } }
-                                    }
+                                    height: 34px;
+                                    vertical-stretch: 0;
+                                    spacing: 8px;
+                                    Text { width: 72px; text: "自动取消"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                    InputField { width: 72px; value <=> root.timeout-seconds; placeholder: "10"; edited => { root.settings-dirty(); } }
+                                    Text { width: 16px; text: "秒"; color: #475569; font-size: 12px; vertical-alignment: center; }
+                                    Text { horizontal-stretch: 1; text: "所有确认方式共享；超时后自动取消本次发送。"; color: #64748b; font-size: 11px; vertical-alignment: center; overflow: elide; }
                                 }
                             }
                         }
                         Rectangle {
+                            height: 142px;
+                            vertical-stretch: 0;
                             border-radius: 9px;
                             border-width: 1px;
                             border-color: #e2e8f0;
@@ -761,8 +869,10 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 padding: 16px;
                                 spacing: 6px;
-                                Text { text: "拦截策略"; color: #0f172a; font-size: 14px; font-weight: 600; }
+                                Text { height: 18px; text: "拦截策略"; color: #0f172a; font-size: 14px; font-weight: 700; }
                                 HorizontalLayout {
+                                    height: 38px;
+                                    vertical-stretch: 0;
                                     spacing: 12px;
                                     ToggleLine {
                                         horizontal-stretch: 1;
@@ -790,6 +900,7 @@ export component AppWindow inherits Window {
                                 Text { height: 18px; text: "Shift+Enter 与输入法候选确认始终放行。"; color: #64748b; font-size: 11px; }
                             }
                         }
+                        Rectangle { vertical-stretch: 1; background: #00000000; }
                     }
                 }
 
@@ -798,9 +909,11 @@ export component AppWindow inherits Window {
                     background: #00000000;
                     VerticalLayout {
                         spacing: 10px;
-                        Text { text: "通用设置"; color: #0f172a; font-size: 20px; font-weight: 600; }
+                        Text { height: 26px; text: "通用设置"; color: #0f172a; font-size: 20px; font-weight: 700; }
                         Text { height: 20px; text: "所有设置保存在当前 Windows 用户目录，不需要管理员权限。"; color: #64748b; font-size: 12px; }
                         Rectangle {
+                            height: 156px;
+                            vertical-stretch: 0;
                             border-radius: 9px;
                             border-width: 1px;
                             border-color: #e2e8f0;
@@ -808,7 +921,7 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 padding: 14px;
                                 spacing: 8px;
-                                Text { text: "微信客户端与未知会话"; color: #0f172a; font-size: 14px; font-weight: 600; }
+                                Text { text: "微信客户端与未知会话"; color: #0f172a; font-size: 14px; font-weight: 700; }
                                 HorizontalLayout {
                                     InputField {
                                         horizontal-stretch: 1;
@@ -837,6 +950,8 @@ export component AppWindow inherits Window {
                             }
                         }
                         Rectangle {
+                            height: 120px;
+                            vertical-stretch: 0;
                             border-radius: 9px;
                             border-width: 1px;
                             border-color: #e2e8f0;
@@ -849,11 +964,6 @@ export component AppWindow inherits Window {
                                     note: "使用当前用户的启动项；不会请求管理员权限。";
                                     checked: root.start-with-windows;
                                     toggled(value) => { root.start-with-windows = value; root.startup-toggled(value); }
-                                }
-                                HorizontalLayout {
-                                    Text { width: 110px; text: "日志保留天数"; color: #1e293b; font-size: 13px; vertical-alignment: center; }
-                                    InputField { width: 110px; value <=> root.log-retention-days; placeholder: "7"; edited => { root.settings-dirty(); } }
-                                    Text { text: "仅保留最小诊断信息，不包含消息内容或会话名称。"; color: #64748b; font-size: 11px; vertical-alignment: center; }
                                 }
                                 HorizontalLayout {
                                     spacing: 8px;
@@ -869,6 +979,142 @@ export component AppWindow inherits Window {
                                         label: "关于 Slint";
                                         clicked => { root.about-slint-requested(); }
                                     }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 185px;
+                            vertical-stretch: 0;
+                            border-radius: 9px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    height: 34px;
+                                    vertical-stretch: 0;
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 1px;
+                                        Text { height: 18px; text: "日志与诊断"; color: #0f172a; font-size: 14px; font-weight: 700; }
+                                        Text { height: 15px; text: "仅记录拦截状态，不包含消息内容或会话名称。"; color: #64748b; font-size: 11px; overflow: elide; }
+                                    }
+                                    AppButton { width: 112px; label: "导出诊断日志"; primary: true; clicked => { root.export-diagnostics-requested(); } }
+                                }
+                                Rectangle { height: 1px; vertical-stretch: 0; background: #e2e8f0; }
+                                HorizontalLayout {
+                                    height: 34px;
+                                    vertical-stretch: 0;
+                                    spacing: 8px;
+                                    Text { width: 72px; text: "保留时间"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                    InputField { width: 72px; value <=> root.log-retention-days; placeholder: "7"; edited => { root.settings-dirty(); } }
+                                    Text { width: 140px; text: "天（1–30 天，自动清理）"; color: #64748b; font-size: 11px; vertical-alignment: center; }
+                                    Rectangle { horizontal-stretch: 1; background: #00000000; }
+                                }
+                                HorizontalLayout {
+                                    height: 34px;
+                                    vertical-stretch: 0;
+                                    spacing: 8px;
+                                    Text { width: 72px; text: "日志位置"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                    Text { horizontal-stretch: 1; text: root.log-directory; color: #475569; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                    AppButton { width: 100px; label: "打开日志目录"; clicked => { root.open-log-directory-requested(); } }
+                                }
+                                HorizontalLayout {
+                                    height: 34px;
+                                    vertical-stretch: 0;
+                                    spacing: 8px;
+                                    Text { width: 72px; text: "维护"; color: #1e293b; font-size: 12px; vertical-alignment: center; }
+                                    Text { horizontal-stretch: 1; text: "清空后无法恢复。"; color: #64748b; font-size: 11px; vertical-alignment: center; }
+                                    AppButton { width: 88px; label: "清空日志"; danger: true; clicked => { root.clear-logs-requested(); } }
+                                }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; background: #00000000; }
+                    }
+                }
+
+                if (root.active-page == 3) : Rectangle {
+                    vertical-stretch: 1;
+                    background: #00000000;
+                    VerticalLayout {
+                        spacing: 12px;
+                        Text { height: 28px; text: "关于"; color: #0f172a; font-size: 20px; font-weight: 700; }
+                        Text { height: 20px; text: "版本更新只访问 GitHub Releases，不会上传消息、会话或日志。"; color: #64748b; font-size: 12px; }
+                        Rectangle {
+                            vertical-stretch: 0;
+                            border-radius: 9px;
+                            border-width: 1px;
+                            border-color: root.update-available ? #86efac : #e2e8f0;
+                            background: root.update-available ? #f0fdf4 : #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 8px;
+                                Text { height: 22px; text: "WeChatSendGuard " + root.application-version; color: #0f172a; font-size: 16px; font-weight: 700; }
+                                Text {
+                                    height: 20px;
+                                    text: root.update-status-text;
+                                    color: root.update-status-error ? #dc2626 : (root.update-available ? #047857 : #475569);
+                                    font-size: 12px;
+                                    font-weight: 400;
+                                    overflow: elide;
+                                }
+                                if (root.update-available) : Text {
+                                    height: 18px;
+                                    text: "新版本：v" + root.latest-update-version + " · " + root.latest-update-notes;
+                                    color: #475569;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    AppButton { width: 92px; label: "检查更新"; clicked => { root.check-updates-requested(); } }
+                                    AppButton {
+                                        width: 112px;
+                                        visible: root.update-available;
+                                        label: "下载并安装";
+                                        primary: true;
+                                        clicked => { root.download-update-requested(); }
+                                    }
+                                    AppButton {
+                                        width: 96px;
+                                        visible: root.update-available;
+                                        label: "忽略此版本";
+                                        clicked => { root.ignore-update-requested(); }
+                                    }
+                                    AppButton {
+                                        width: 108px;
+                                        visible: root.update-available && root.ignored-update-version != "";
+                                        label: "取消忽略";
+                                        clicked => { root.clear-ignored-update-requested(); }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: #00000000; }
+                                }
+                                if (root.update-available && root.ignored-update-version != "") : Text {
+                                    height: 18px;
+                                    text: "已忽略版本：v" + root.ignored-update-version + "；更高版本仍会提示。";
+                                    color: #a16207;
+                                    font-size: 11px;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 78px;
+                            vertical-stretch: 0;
+                            border-radius: 9px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 6px;
+                                ToggleLine {
+                                    label: "启动后自动检查更新";
+                                    note: "默认开启；仅检查正式版，不会自动下载或安装。";
+                                    checked: root.auto-check-updates;
+                                    toggled(value) => { root.auto-check-updates = value; root.auto-check-updates-toggled(value); }
                                 }
                             }
                         }
@@ -889,7 +1135,7 @@ export component AppWindow inherits Window {
                         text: root.save-status;
                         color: root.save-status-error ? #dc2626 : #475569;
                         font-size: 12px;
-                        font-weight: 500;
+                        font-weight: 400;
                         vertical-alignment: center;
                     }
                     save := AppButton {
@@ -907,6 +1153,62 @@ export component AppWindow inherits Window {
     }
 }
 }
+}
+
+export component UpdatePromptWindow inherits Window {
+    title: "发现新版本";
+    width: 380px;
+    height: 178px;
+    no-frame: true;
+    always-on-top: true;
+    background: #ffffff;
+    default-font-family: "Microsoft YaHei";
+    default-font-size: 13px;
+    default-font-weight: 400;
+
+    in-out property <string> update-version: "";
+    callback open-about();
+    callback dismissed();
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-width: 1px;
+        border-color: #86efac;
+        background: #ffffff;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            Text {
+                height: 22px;
+                text: "发现新版本";
+                color: #0f172a;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                height: 20px;
+                text: "WeChatSendGuard v" + root.update-version + " 已可用";
+                color: #047857;
+                font-size: 13px;
+                font-weight: 400;
+            }
+            Text {
+                height: 34px;
+                text: "可在“关于”页查看说明并选择下载、校验和安装。";
+                color: #64748b;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; background: #00000000; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                AppButton { width: 72px; label: "稍后"; clicked => { root.dismissed(); } }
+                AppButton { width: 96px; label: "查看更新"; primary: true; clicked => { root.open-about(); } }
+            }
+        }
+    }
 }
 
 export component SlintAboutWindow inherits Window {
@@ -928,8 +1230,9 @@ export component ConfirmationWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     background: #ffffff;
-    default-font-family: "Microsoft YaHei UI";
+    default-font-family: "Microsoft YaHei";
     default-font-size: 13px;
+    default-font-weight: 400;
 
     in-out property <string> target-kind: "群聊";
     in-out property <string> target-name: "当前会话";
@@ -983,7 +1286,7 @@ export component ConfirmationWindow inherits Window {
                         text: "发送前确认";
                         color: #0f172a;
                         font-size: 15px;
-                        font-weight: 600;
+                        font-weight: 700;
                         vertical-alignment: center;
                     }
                     Rectangle {
@@ -1025,7 +1328,7 @@ export component ConfirmationWindow inherits Window {
                             text: root.target-kind;
                             color: root.target-kind == "联系人" ? #15803d : #0369a1;
                             font-size: 10px;
-                            font-weight: 600;
+                            font-weight: 700;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -1038,7 +1341,7 @@ export component ConfirmationWindow inherits Window {
                         text: root.target-name;
                         color: #0f172a;
                         font-size: 15px;
-                        font-weight: 600;
+                        font-weight: 700;
                         vertical-alignment: center;
                         overflow: elide;
                     }

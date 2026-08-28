@@ -81,51 +81,108 @@ impl GuardService {
     /// This method is safe for a fast keyboard-hook callback because it reads a cached
     /// platform snapshot only. It does not refresh UI Automation, show UI, or inject input.
     pub fn handle_physical_enter(&self, enter: PhysicalEnter, now: SystemTime) -> EnterHandling {
+        let trace_id = uuid::Uuid::new_v4();
+        let source = if enter.is_numpad_enter {
+            "numpad-enter"
+        } else {
+            "enter"
+        };
         if enter.is_injected {
             return EnterHandling::PassThrough;
         }
 
         let settings = self.settings();
+        let context = self.platform.current();
+        // The physical hook observes all applications. Keep diagnostics scoped to a cached,
+        // trusted Weixin context so normal typing in unrelated applications never becomes a
+        // local audit trail.
+        if !context.is_trusted_weixin {
+            return EnterHandling::PassThrough;
+        }
         if !settings.intercept_keyboard_enter
             || (enter.is_numpad_enter && !settings.intercept_numpad_enter)
             || (settings.shift_enter_pass_through && enter.shift_pressed)
         {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-decision",
+                "pass-through-strategy",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
 
-        let context = self.platform.current();
         if context.window_handle != enter.foreground_window
-            || !context.is_trusted_weixin
             || !context.is_compatibility_available
             || !context.is_message_editor_focused
         {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-decision",
+                "pass-through-context",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
 
         if context_is_stale(&context, now) {
-            self.write_audit(None, "send-blocked", "stale-context", now);
+            self.write_trace(None, trace_id, "send-blocked", "stale-context", source, now);
             return EnterHandling::SuppressBlockedUnknown;
         }
 
         let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
         if !decision.should_suppress() {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-decision",
+                "pass-through-rule",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
         if decision.kind == ProtectionDecisionKind::BlockUnknown {
-            self.write_audit(None, "send-blocked", "unknown-chat", now);
+            self.write_trace(None, trace_id, "send-blocked", "unknown-chat", source, now);
             return EnterHandling::SuppressBlockedUnknown;
         }
 
         let timeout = Duration::from_secs(u64::from(settings.confirmation.timeout_seconds));
-        match self
-            .state_machine
-            .try_begin(context, decision, enter.is_numpad_enter, timeout, now)
-        {
+        match self.state_machine.try_begin(
+            context,
+            decision,
+            enter.is_numpad_enter,
+            trace_id,
+            timeout,
+            now,
+        ) {
             Some(pending) => {
                 *lock_unpoisoned(&self.active_confirmation) = Some(pending.attempt_id);
+                self.write_trace(
+                    pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                    pending.trace_id,
+                    "confirmation",
+                    "requested",
+                    source,
+                    now,
+                );
                 EnterHandling::SuppressAndConfirm(Box::new(pending))
             }
-            None => EnterHandling::SuppressWhileConfirmationActive,
+            None => {
+                self.write_trace(
+                    None,
+                    trace_id,
+                    "send-blocked",
+                    "confirmation-already-active",
+                    source,
+                    now,
+                );
+                EnterHandling::SuppressWhileConfirmationActive
+            }
         }
     }
 
@@ -138,8 +195,29 @@ impl GuardService {
         foreground_window: isize,
         now: SystemTime,
     ) -> EnterHandling {
+        self.handle_send_button_click_with_trace(foreground_window, uuid::Uuid::new_v4(), now)
+    }
+
+    /// Same as [`Self::handle_send_button_click`], while allowing the Windows adapter to attach
+    /// its button-hit diagnosis to the same opaque diagnostic trace. The trace contains no
+    /// message content or chat title.
+    pub fn handle_send_button_click_with_trace(
+        &self,
+        foreground_window: isize,
+        trace_id: uuid::Uuid,
+        now: SystemTime,
+    ) -> EnterHandling {
+        let source = "send-button";
         let settings = self.settings();
         if !settings.enabled || !settings.intercept_send_button {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-decision",
+                "pass-through-strategy",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
 
@@ -149,33 +227,81 @@ impl GuardService {
             || !context.is_compatibility_available
             || !context.is_message_editor_focused
         {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-decision",
+                "pass-through-context",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
 
         if context_is_stale(&context, now) {
-            self.write_audit(None, "send-button-blocked", "stale-context", now);
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-blocked",
+                "stale-context",
+                source,
+                now,
+            );
             return EnterHandling::SuppressBlockedUnknown;
         }
 
         let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
         if !decision.should_suppress() {
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-decision",
+                "pass-through-rule",
+                source,
+                now,
+            );
             return EnterHandling::PassThrough;
         }
         if decision.kind == ProtectionDecisionKind::BlockUnknown {
-            self.write_audit(None, "send-button-blocked", "unknown-chat", now);
+            self.write_trace(
+                None,
+                trace_id,
+                "send-button-blocked",
+                "unknown-chat",
+                source,
+                now,
+            );
             return EnterHandling::SuppressBlockedUnknown;
         }
 
         let timeout = Duration::from_secs(u64::from(settings.confirmation.timeout_seconds));
         match self
             .state_machine
-            .try_begin(context, decision, false, timeout, now)
+            .try_begin(context, decision, false, trace_id, timeout, now)
         {
             Some(pending) => {
                 *lock_unpoisoned(&self.active_confirmation) = Some(pending.attempt_id);
+                self.write_trace(
+                    pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                    pending.trace_id,
+                    "confirmation",
+                    "requested",
+                    source,
+                    now,
+                );
                 EnterHandling::SuppressAndConfirm(Box::new(pending))
             }
-            None => EnterHandling::SuppressWhileConfirmationActive,
+            None => {
+                self.write_trace(
+                    None,
+                    trace_id,
+                    "send-button-blocked",
+                    "confirmation-already-active",
+                    source,
+                    now,
+                );
+                EnterHandling::SuppressWhileConfirmationActive
+            }
         }
     }
 
@@ -222,6 +348,7 @@ impl GuardService {
             self.clear_active_confirmation(pending.attempt_id);
             self.write_audit(
                 pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
                 "confirmation",
                 outcome_name(outcome),
                 now,
@@ -241,6 +368,7 @@ impl GuardService {
                 self.clear_active_confirmation(pending.attempt_id);
                 self.write_audit(
                     pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                    Some(pending.trace_id),
                     "send",
                     "cancelled-editor-focus",
                     now,
@@ -261,6 +389,7 @@ impl GuardService {
         if !resolution.should_inject {
             self.write_audit(
                 pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
                 "send",
                 "cancelled-context-changed",
                 now,
@@ -274,6 +403,7 @@ impl GuardService {
             Ok(()) => {
                 self.write_audit(
                     pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                    Some(pending.trace_id),
                     "send",
                     "injected",
                     now,
@@ -283,6 +413,7 @@ impl GuardService {
             Err(error) => {
                 self.write_audit(
                     pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                    Some(pending.trace_id),
                     "send",
                     "injection-failed",
                     now,
@@ -324,6 +455,7 @@ impl GuardService {
         self.clear_active_confirmation(pending.attempt_id);
         self.write_audit(
             pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+            Some(pending.trace_id),
             "confirmation",
             "cancelled-context-changed",
             now,
@@ -349,6 +481,7 @@ impl GuardService {
         );
         self.write_audit(
             Some(protected_chat.id),
+            None,
             "temporary-bypass",
             format!("granted-{minutes}m"),
             now,
@@ -374,16 +507,32 @@ impl GuardService {
     fn write_audit(
         &self,
         protected_chat_id: Option<uuid::Uuid>,
+        trace_id: Option<uuid::Uuid>,
         event_type: impl Into<String>,
         result: impl Into<String>,
         timestamp: SystemTime,
     ) {
-        self.audit_log.write(AuditEntry::new(
-            timestamp,
-            protected_chat_id,
-            event_type,
-            result,
-        ));
+        let mut entry = AuditEntry::new(timestamp, protected_chat_id, event_type, result);
+        if let Some(trace_id) = trace_id {
+            entry = entry.with_trace_id(trace_id);
+        }
+        self.audit_log.write(entry);
+    }
+
+    fn write_trace(
+        &self,
+        protected_chat_id: Option<uuid::Uuid>,
+        trace_id: uuid::Uuid,
+        event_type: impl Into<String>,
+        result: impl Into<String>,
+        source: &str,
+        timestamp: SystemTime,
+    ) {
+        self.audit_log.write(
+            AuditEntry::new(timestamp, protected_chat_id, event_type, result)
+                .with_trace_id(trace_id)
+                .with_details([("source", source)]),
+        );
     }
 }
 

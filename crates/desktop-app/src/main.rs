@@ -6,6 +6,9 @@
 //! `guard-service` evaluates cached snapshots, and `platform-windows` can inject only after the
 //! service has revalidated the original target.
 
+mod diagnostics;
+mod update;
+
 #[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
@@ -26,7 +29,7 @@ use wechat_send_guard_core::{
     export_protected_chats, import_protected_chats, normalize_title,
 };
 use wechat_send_guard_desktop_ui::{
-    AppTray, AppWindow, ChatRow, ConfirmationWindow, SlintAboutWindow,
+    AppTray, AppWindow, ChatRow, ConfirmationWindow, SlintAboutWindow, UpdatePromptWindow,
 };
 use wechat_send_guard_platform_api::{AuditLog, ChatContextProvider, StartupRegistration};
 use wechat_send_guard_platform_windows::{
@@ -34,7 +37,8 @@ use wechat_send_guard_platform_windows::{
     WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsMouseHook,
     WindowsStartupRegistration, activate_window, center_popup_over_window, cursor_screen_position,
     default_audit_log_directory, enable_high_dpi_awareness, is_valid_weixin_executable_path,
-    path_matches_trusted_weixin, select_protected_chat_export, select_protected_chat_import,
+    path_matches_trusted_weixin, select_diagnostic_export, select_protected_chat_export,
+    select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
 
@@ -45,11 +49,38 @@ const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const CONFIRMATION_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const HOLD_TICK_INTERVAL: Duration = Duration::from_millis(20);
 const ADD_CURRENT_CHAT_CONTEXT_MAX_AGE: Duration = Duration::from_secs(5);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPDATE_CHECK_START_DELAY: Duration = Duration::from_secs(8);
+const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPDATE_TEMPORARY_DIRECTORY: &str = "updates";
 
 type ActiveConfirmationSlot = Rc<RefCell<Option<ActiveConfirmation>>>;
 type ActiveConfirmationWeak = RcWeak<RefCell<Option<ActiveConfirmation>>>;
 type SlintAboutSlot = Rc<RefCell<Option<SlintAboutWindow>>>;
+type UpdatePromptSlot = Rc<RefCell<Option<UpdatePromptWindow>>>;
 type WindowDragOrigin = Rc<RefCell<Option<(slint::PhysicalPosition, slint::PhysicalPosition)>>>;
+type UpdateStateSlot = Arc<std::sync::Mutex<UpdateState>>;
+
+struct BackgroundTimers {
+    initial_update_check: Timer,
+    recurring_update_check: Timer,
+    log_cleanup: Timer,
+}
+
+impl BackgroundTimers {
+    fn stop(&self) {
+        self.initial_update_check.stop();
+        self.recurring_update_check.stop();
+        self.log_cleanup.stop();
+    }
+}
+
+#[derive(Debug, Default)]
+struct UpdateState {
+    latest_release: Option<update::Release>,
+    checking: bool,
+    downloading: bool,
+}
 
 struct Controller {
     store: FileSettingsStore,
@@ -63,6 +94,7 @@ struct Controller {
 impl Controller {
     fn apply_settings(&mut self, settings: AppSettings) -> Result<(), String> {
         let settings = settings.sanitize();
+        let retention_changed = self.settings.log_retention_days != settings.log_retention_days;
         self.store
             .save(settings.clone())
             .map_err(|error| format!("无法保存设置：{error}"))?;
@@ -71,6 +103,12 @@ impl Controller {
             .set_trusted_weixin_executable_path(settings.trusted_weixin_executable_path.as_deref());
         self.service.update_settings(settings.clone());
         self.audit.set_retention_days(settings.log_retention_days);
+        if retention_changed {
+            let audit_for_cleanup = self.audit.clone();
+            thread::spawn(move || {
+                let _ = audit_for_cleanup.cleanup();
+            });
+        }
         self.settings = settings.clone();
 
         if let Some(startup) = &self.startup {
@@ -169,6 +207,27 @@ fn run() -> Result<(), Box<dyn Error>> {
         default_audit_log_directory(&local_app_data),
         settings.log_retention_days,
     )?);
+    let _ = audit.cleanup();
+    let trusted_weixin_executable = settings
+        .trusted_weixin_executable_path
+        .as_deref()
+        .unwrap_or(TRUSTED_WEIXIN_PATH);
+    audit.write(
+        AuditEntry::new(SystemTime::now(), None, "diagnostics", "environment").with_details([
+            ("applicationVersion", APPLICATION_VERSION.to_owned()),
+            ("operatingSystem", operating_system_version()),
+            ("architecture", std::env::consts::ARCH.to_owned()),
+            (
+                "weixinVersion",
+                executable_file_version(std::path::Path::new(trusted_weixin_executable))
+                    .unwrap_or_else(|| "未能读取".to_owned()),
+            ),
+            (
+                "trustedWeixinExecutable",
+                diagnostics::redact_windows_path(trusted_weixin_executable),
+            ),
+        ]),
+    );
     let injector = Arc::new(WindowsInputInjector::with_random_marker());
     let service = Arc::new(GuardService::new(
         settings.clone(),
@@ -187,9 +246,11 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let main_window = AppWindow::new()?;
     let tray = AppTray::new()?;
+    let update_state: UpdateStateSlot = Arc::new(std::sync::Mutex::new(UpdateState::default()));
     tray.set_protection_enabled(controller.borrow().settings.enabled);
     let active_confirmation: ActiveConfirmationSlot = Rc::new(RefCell::new(None));
     let about_slint: SlintAboutSlot = Rc::new(RefCell::new(None));
+    let update_prompt: UpdatePromptSlot = Rc::new(RefCell::new(None));
     render_settings(&main_window, &controller.borrow().settings, None);
     bind_window_callbacks(
         &main_window,
@@ -197,7 +258,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         Rc::clone(&controller),
         Rc::clone(&active_confirmation),
         Rc::clone(&about_slint),
+        Arc::clone(&update_state),
+        local_app_data.join(APPLICATION_DIRECTORY),
     );
+    bind_update_prompt_callback(&main_window, Rc::clone(&update_prompt));
     bind_tray_callbacks(
         &tray,
         &main_window,
@@ -209,6 +273,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         &tray,
         Rc::clone(&controller),
         provider.clone(),
+    );
+    let background_timers = install_background_timers(
+        &main_window,
+        Rc::clone(&controller),
+        Arc::clone(&update_state),
+        audit.clone(),
     );
 
     let mut context_monitor = WindowsContextMonitor::new(provider.clone());
@@ -281,6 +351,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mouse_window_weak = main_window.as_weak();
     mouse_hook.set_left_down_handler(Arc::new(move |click| {
         let now = SystemTime::now();
+        let trace_id = Uuid::new_v4();
         let context = mouse_hook_provider.current();
         if context.window_handle != click.foreground_window || !context.is_trusted_weixin {
             return false;
@@ -292,51 +363,71 @@ fn run() -> Result<(), Box<dyn Error>> {
             click.screen_y,
             now,
         );
-        mouse_hook_audit.write(AuditEntry::new(
-            now,
-            None,
-            "send-button-diagnostic",
-            diagnosis.audit_result(),
-        ));
+        mouse_hook_audit.write(
+            AuditEntry::new(
+                now,
+                None,
+                "send-button-diagnostic",
+                diagnosis.audit_result(),
+            )
+            .with_trace_id(trace_id)
+            .with_details([("source", "send-button")]),
+        );
         if !diagnosis.should_intercept() {
             return false;
         }
 
-        match mouse_hook_service.handle_send_button_click(click.foreground_window, now) {
+        match mouse_hook_service.handle_send_button_click_with_trace(
+            click.foreground_window,
+            trace_id,
+            now,
+        ) {
             EnterHandling::PassThrough => {
-                mouse_hook_audit.write(AuditEntry::new(
-                    now,
-                    None,
-                    "send-button-diagnostic",
-                    "button-hit-pass-through",
-                ));
+                mouse_hook_audit.write(
+                    AuditEntry::new(
+                        now,
+                        None,
+                        "send-button-diagnostic",
+                        "button-hit-pass-through",
+                    )
+                    .with_trace_id(trace_id),
+                );
                 false
             }
             EnterHandling::SuppressBlockedUnknown => {
-                mouse_hook_audit.write(AuditEntry::new(
-                    now,
-                    None,
-                    "send-button-diagnostic",
-                    "button-blocked-unknown",
-                ));
+                mouse_hook_audit.write(
+                    AuditEntry::new(
+                        now,
+                        None,
+                        "send-button-diagnostic",
+                        "button-blocked-unknown",
+                    )
+                    .with_trace_id(trace_id),
+                );
                 true
             }
             EnterHandling::SuppressWhileConfirmationActive => {
-                mouse_hook_audit.write(AuditEntry::new(
-                    now,
-                    None,
-                    "send-button-diagnostic",
-                    "button-confirmation-already-active",
-                ));
+                mouse_hook_audit.write(
+                    AuditEntry::new(
+                        now,
+                        None,
+                        "send-button-diagnostic",
+                        "button-confirmation-already-active",
+                    )
+                    .with_trace_id(trace_id),
+                );
                 true
             }
             EnterHandling::SuppressAndConfirm(pending) => {
-                mouse_hook_audit.write(AuditEntry::new(
-                    now,
-                    None,
-                    "send-button-diagnostic",
-                    "button-confirmation-requested",
-                ));
+                mouse_hook_audit.write(
+                    AuditEntry::new(
+                        now,
+                        None,
+                        "send-button-diagnostic",
+                        "button-confirmation-requested",
+                    )
+                    .with_trace_id(trace_id),
+                );
                 let attempt_id = pending.attempt_id.to_string();
                 if mouse_window_weak
                     .upgrade_in_event_loop(move |window| {
@@ -372,6 +463,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     keyboard_hook.stop();
     context_monitor.stop();
     status_timer.stop();
+    background_timers.stop();
     audit.shutdown();
     Ok(())
 }
@@ -419,7 +511,7 @@ fn run_ui_snapshot(mut settings: AppSettings, active_page: i32) -> Result<(), Bo
         ];
     }
     render_settings(&window, &settings, None);
-    let active_page = active_page.clamp(0, 2);
+    let active_page = active_page.clamp(0, 3);
     window.set_active_page(active_page);
     let enabled = settings.enabled;
     let enabled_suffix = if enabled { "enabled" } else { "disabled" };
@@ -557,6 +649,168 @@ fn local_app_data_directory() -> Result<PathBuf, Box<dyn Error>> {
     Ok(PathBuf::from(user_profile).join("AppData").join("Local"))
 }
 
+fn launch_installer(installer: &std::path::Path) -> Result<(), String> {
+    let mut command = std::process::Command::new(installer);
+    command
+        .spawn()
+        .map_err(|error| format!("无法启动安装程序：{error}"))?;
+    Ok(())
+}
+
+fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("无法打开日志目录：{error}"))?;
+    std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("无法打开日志目录：{error}"))?;
+    Ok(())
+}
+
+fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
+    let (audit, settings) = {
+        let controller = controller.borrow();
+        (controller.audit.clone(), controller.settings.clone())
+    };
+    let default_name = format!("WeChatSendGuard-diagnostics-{}.zip", APPLICATION_VERSION);
+    let destination = match select_diagnostic_export(&default_name) {
+        Ok(Some(path)) => path,
+        Ok(None) => return,
+        Err(error) => {
+            set_save_status(window, format!("无法选择导出位置：{error}"), true);
+            return;
+        }
+    };
+    if let Err(error) = audit.flush() {
+        set_save_status(window, format!("无法准备诊断日志：{error}"), true);
+        return;
+    }
+    let trusted_path = settings
+        .trusted_weixin_executable_path
+        .as_deref()
+        .unwrap_or(TRUSTED_WEIXIN_PATH);
+    let environment = diagnostics::DiagnosticEnvironment {
+        application_version: APPLICATION_VERSION,
+        operating_system: operating_system_version(),
+        architecture: std::env::consts::ARCH,
+        weixin_version: executable_file_version(std::path::Path::new(trusted_path)),
+        trusted_weixin_executable: diagnostics::redact_windows_path(trusted_path),
+        auto_check_updates: settings.auto_check_updates,
+        ignored_update_version: settings.ignored_update_version.as_deref(),
+    };
+    match diagnostics::write_diagnostic_archive(&destination, audit.log_directory(), &environment) {
+        Ok(()) => set_save_status(
+            window,
+            format!("诊断包已导出：{}", destination.display()),
+            false,
+        ),
+        Err(error) => set_save_status(window, error, true),
+    }
+}
+
+#[cfg(windows)]
+fn operating_system_version() -> String {
+    use std::mem::size_of;
+    use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOW};
+
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: version is a properly sized writable OSVERSIONINFOW structure for the synchronous call.
+    match unsafe { GetVersionExW(&mut version) } {
+        Ok(()) => {
+            let name = if version.dwMajorVersion == 10 && version.dwBuildNumber >= 22_000 {
+                "Windows 11"
+            } else if version.dwMajorVersion == 10 {
+                "Windows 10"
+            } else {
+                "Windows"
+            };
+            format!(
+                "{name} ({}.{}.{})",
+                version.dwMajorVersion, version.dwMinorVersion, version.dwBuildNumber
+            )
+        }
+        Err(_) => "Windows（版本未能读取）".to_owned(),
+    }
+}
+
+#[cfg(not(windows))]
+fn operating_system_version() -> String {
+    std::env::consts::OS.to_owned()
+}
+
+#[cfg(windows)]
+fn executable_file_version(path: &std::path::Path) -> Option<String> {
+    use std::{ffi::c_void, mem::size_of, os::windows::ffi::OsStrExt};
+    use windows::{
+        Win32::Storage::FileSystem::{
+            GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
+        },
+        core::PCWSTR,
+    };
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: path is NUL-terminated and retained for the entire synchronous version query.
+    let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(path.as_ptr()), None) };
+    if size == 0 {
+        return None;
+    }
+    let mut data = vec![0u8; size as usize];
+    // SAFETY: data is a valid mutable buffer of exactly the queried version-info size.
+    unsafe {
+        GetFileVersionInfoW(
+            PCWSTR(path.as_ptr()),
+            None,
+            size,
+            data.as_mut_ptr().cast::<c_void>(),
+        )
+        .ok()?;
+    }
+    let mut fixed: *mut c_void = std::ptr::null_mut();
+    let mut length = 0u32;
+    let root = [0u16];
+    // SAFETY: data remains alive and root is a NUL-terminated sub-block selector for this call.
+    if !unsafe {
+        VerQueryValueW(
+            data.as_ptr().cast::<c_void>(),
+            PCWSTR(root.as_ptr()),
+            &mut fixed,
+            &mut length,
+        )
+    }
+    .as_bool()
+        || fixed.is_null()
+        || length < size_of::<VS_FIXEDFILEINFO>() as u32
+    {
+        return None;
+    }
+    // SAFETY: VerQueryValueW returned a buffer with at least a VS_FIXEDFILEINFO structure.
+    let fixed = unsafe { &*(fixed.cast::<VS_FIXEDFILEINFO>()) };
+    Some(format!(
+        "{}.{}.{}.{}",
+        fixed.dwFileVersionMS >> 16,
+        fixed.dwFileVersionMS & 0xffff,
+        fixed.dwFileVersionLS >> 16,
+        fixed.dwFileVersionLS & 0xffff
+    ))
+}
+
+#[cfg(not(windows))]
+fn executable_file_version(_path: &std::path::Path) -> Option<String> {
+    None
+}
+
+fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn is_background_start_argument(argument: &str) -> bool {
     ["--silent", "--startup", "--background"]
         .iter()
@@ -569,6 +823,8 @@ fn bind_window_callbacks(
     controller: Rc<RefCell<Controller>>,
     active_confirmation: ActiveConfirmationSlot,
     about_slint: SlintAboutSlot,
+    update_state: UpdateStateSlot,
+    application_data_directory: PathBuf,
 ) {
     let main_window_weak = main_window.as_weak();
     let tray_weak = tray.as_weak();
@@ -663,6 +919,32 @@ fn bind_window_callbacks(
     main_window.on_startup_toggled({
         let main_window_weak = main_window_weak.clone();
         move |_| mark_unsaved(&main_window_weak)
+    });
+    main_window.on_auto_check_updates_toggled({
+        let controller = Rc::clone(&controller);
+        let main_window_weak = main_window_weak.clone();
+        move |enabled| {
+            let result = {
+                let mut controller = controller.borrow_mut();
+                let mut settings = controller.settings.clone();
+                settings.auto_check_updates = enabled;
+                controller.apply_settings(settings)
+            };
+            if let Some(window) = main_window_weak.upgrade() {
+                match result {
+                    Ok(()) => set_save_status(
+                        &window,
+                        if enabled {
+                            "已开启自动检查更新"
+                        } else {
+                            "已关闭自动检查更新"
+                        },
+                        false,
+                    ),
+                    Err(error) => set_save_status(&window, error, true),
+                }
+            }
+        }
     });
     main_window.on_reset_weixin_executable_path({
         let main_window_weak = main_window_weak.clone();
@@ -765,6 +1047,128 @@ fn bind_window_callbacks(
             }
         }
     });
+    main_window.on_check_updates_requested({
+        let controller = Rc::clone(&controller);
+        let update_state = Arc::clone(&update_state);
+        let main_window_weak = main_window_weak.clone();
+        move || request_update_check(&main_window_weak, &controller, &update_state, "manual")
+    });
+    main_window.on_ignore_update_requested({
+        let controller = Rc::clone(&controller);
+        let update_state = Arc::clone(&update_state);
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            let Some(release) = lock_unpoisoned(&update_state).latest_release.clone() else {
+                return;
+            };
+            let result = {
+                let mut controller = controller.borrow_mut();
+                let mut settings = controller.settings.clone();
+                settings.ignored_update_version = Some(release.version.to_string());
+                controller.apply_settings(settings)
+            };
+            if let Some(window) = main_window_weak.upgrade() {
+                match result {
+                    Ok(()) => {
+                        // Ignoring a version suppresses automatic reminders only. The About page
+                        // must continue to show its release details and manual upgrade action.
+                        window.set_update_available(true);
+                        window.set_update_status_text(
+                            format!("v{} 已忽略自动提醒；仍可在此页手动升级", release.version)
+                                .into(),
+                        );
+                        window.set_update_status_error(false);
+                        window.set_ignored_update_version(release.version.to_string().into());
+                        set_save_status(
+                            &window,
+                            format!("已忽略 v{}；后续更高版本仍会提醒", release.version),
+                            false,
+                        );
+                    }
+                    Err(error) => set_save_status(&window, error, true),
+                }
+            }
+        }
+    });
+    main_window.on_clear_ignored_update_requested({
+        let controller = Rc::clone(&controller);
+        let update_state = Arc::clone(&update_state);
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            let result = {
+                let mut controller = controller.borrow_mut();
+                let mut settings = controller.settings.clone();
+                settings.ignored_update_version = None;
+                controller.apply_settings(settings)
+            };
+            if let Some(window) = main_window_weak.upgrade() {
+                match result {
+                    Ok(()) => {
+                        window.set_ignored_update_version("".into());
+                        let release = lock_unpoisoned(&update_state).latest_release.clone();
+                        if let Some(release) = release {
+                            window.set_update_available(true);
+                            window.set_update_status_text(
+                                format!("发现新版本 v{}", release.version).into(),
+                            );
+                            window.set_update_status_error(false);
+                        }
+                        set_save_status(&window, "已恢复该版本的更新提醒", false);
+                    }
+                    Err(error) => set_save_status(&window, error, true),
+                }
+            }
+        }
+    });
+    main_window.on_download_update_requested({
+        let update_state = Arc::clone(&update_state);
+        let main_window_weak = main_window_weak.clone();
+        let application_data_directory = application_data_directory.clone();
+        move || {
+            download_and_start_update(
+                &main_window_weak,
+                &update_state,
+                &application_data_directory,
+            )
+        }
+    });
+    main_window.on_open_log_directory_requested({
+        let audit = controller.borrow().audit.clone();
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            if let Err(error) = open_path_in_explorer(audit.log_directory())
+                && let Some(window) = main_window_weak.upgrade()
+            {
+                set_save_status(&window, error, true);
+            }
+        }
+    });
+    main_window.on_export_diagnostics_requested({
+        let controller = Rc::clone(&controller);
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            if let Some(window) = main_window_weak.upgrade() {
+                export_diagnostics(&window, &controller);
+            }
+        }
+    });
+    main_window.on_clear_logs_requested({
+        let audit = controller.borrow().audit.clone();
+        let main_window_weak = main_window_weak.clone();
+        move || {
+            let result = audit
+                .clear()
+                .map_err(|error| format!("无法清空日志：{error}"));
+            if let Some(window) = main_window_weak.upgrade() {
+                match result {
+                    Ok(()) => {
+                        set_save_status(&window, "本地日志已清空；设置和更新偏好未受影响", false)
+                    }
+                    Err(error) => set_save_status(&window, error, true),
+                }
+            }
+        }
+    });
     main_window.on_confirmation_requested({
         let controller = Rc::clone(&controller);
         let active_confirmation = Rc::clone(&active_confirmation);
@@ -803,6 +1207,17 @@ fn bind_window_callbacks(
     main_window
         .window()
         .on_close_requested(|| CloseRequestResponse::HideWindow);
+}
+
+fn bind_update_prompt_callback(main_window: &AppWindow, update_prompt: UpdatePromptSlot) {
+    let main_window_weak = main_window.as_weak();
+    main_window.on_automatic_update_found(move |version| {
+        if let Err(error) = show_update_prompt(&update_prompt, &main_window_weak, version.as_str())
+            && let Some(window) = main_window_weak.upgrade()
+        {
+            set_save_status(&window, error, true);
+        }
+    });
 }
 
 fn bind_tray_callbacks(
@@ -995,6 +1410,43 @@ fn show_about_slint(slot: &SlintAboutSlot) -> Result<(), String> {
     Ok(())
 }
 
+fn show_update_prompt(
+    slot: &UpdatePromptSlot,
+    main_window_weak: &slint::Weak<AppWindow>,
+    version: &str,
+) -> Result<(), String> {
+    if let Some(window) = slot.borrow().as_ref() {
+        window.set_update_version(version.into());
+        return window.show().map_err(|error| error.to_string());
+    }
+
+    let prompt = UpdatePromptWindow::new().map_err(|error| error.to_string())?;
+    prompt.set_update_version(version.into());
+    prompt
+        .window()
+        .on_close_requested(|| CloseRequestResponse::HideWindow);
+    let prompt_weak = prompt.as_weak();
+    let main_window_weak_for_open = main_window_weak.clone();
+    prompt.on_open_about(move || {
+        if let Some(prompt) = prompt_weak.upgrade() {
+            let _ = prompt.hide();
+        }
+        if let Some(main_window) = main_window_weak_for_open.upgrade() {
+            main_window.set_active_page(3);
+            show_and_restore_main_window(&main_window);
+        }
+    });
+    let prompt_weak = prompt.as_weak();
+    prompt.on_dismissed(move || {
+        if let Some(prompt) = prompt_weak.upgrade() {
+            let _ = prompt.hide();
+        }
+    });
+    prompt.show().map_err(|error| error.to_string())?;
+    *slot.borrow_mut() = Some(prompt);
+    Ok(())
+}
+
 fn install_status_refresh(
     main_window: &AppWindow,
     tray: &AppTray,
@@ -1020,6 +1472,178 @@ fn install_status_refresh(
     timer
 }
 
+fn install_background_timers(
+    main_window: &AppWindow,
+    controller: Rc<RefCell<Controller>>,
+    update_state: UpdateStateSlot,
+    audit: Arc<WindowsAuditLog>,
+) -> BackgroundTimers {
+    let main_window_weak = main_window.as_weak();
+    let initial_update_check = Timer::default();
+    initial_update_check.start(TimerMode::SingleShot, UPDATE_CHECK_START_DELAY, {
+        let main_window_weak = main_window_weak.clone();
+        let controller = Rc::clone(&controller);
+        let update_state = Arc::clone(&update_state);
+        move || {
+            if controller.borrow().settings.auto_check_updates {
+                request_update_check(&main_window_weak, &controller, &update_state, "automatic");
+            }
+        }
+    });
+
+    let recurring_update_check = Timer::default();
+    recurring_update_check.start(TimerMode::Repeated, UPDATE_CHECK_INTERVAL, move || {
+        if controller.borrow().settings.auto_check_updates {
+            request_update_check(&main_window_weak, &controller, &update_state, "automatic");
+        }
+    });
+    let log_cleanup = Timer::default();
+    log_cleanup.start(TimerMode::Repeated, LOG_CLEANUP_INTERVAL, move || {
+        let audit = audit.clone();
+        thread::spawn(move || {
+            let _ = audit.cleanup();
+        });
+    });
+    BackgroundTimers {
+        initial_update_check,
+        recurring_update_check,
+        log_cleanup,
+    }
+}
+
+fn request_update_check(
+    main_window_weak: &slint::Weak<AppWindow>,
+    controller: &Rc<RefCell<Controller>>,
+    update_state: &UpdateStateSlot,
+    mode: &'static str,
+) {
+    let mut state = lock_unpoisoned(update_state);
+    if state.checking {
+        return;
+    }
+    state.checking = true;
+    drop(state);
+    if let Some(window) = main_window_weak.upgrade() {
+        window.set_update_status_text("正在检查更新…".into());
+        window.set_update_status_error(false);
+    }
+    let ignored_version = controller.borrow().settings.ignored_update_version.clone();
+    let window_weak = main_window_weak.clone();
+    let update_state = Arc::clone(update_state);
+    thread::spawn(move || {
+        let result = update::check_for_update(APPLICATION_VERSION);
+        let _ = window_weak.upgrade_in_event_loop(move |window| {
+            let mut state = lock_unpoisoned(&update_state);
+            state.checking = false;
+            match result {
+                Ok(update::UpdateCheckResult::UpToDate) => {
+                    state.latest_release = None;
+                    window.set_update_available(false);
+                    window.set_ignored_update_version("".into());
+                    window.set_latest_update_version("".into());
+                    window.set_latest_update_notes("".into());
+                    window.set_update_status_text("当前已是最新版本".into());
+                    window.set_update_status_error(false);
+                }
+                Ok(update::UpdateCheckResult::UpdateAvailable(release)) => {
+                    let release = *release;
+                    let ignored = ignored_version
+                        .as_deref()
+                        .is_some_and(|version| version == release.version.to_string());
+                    // An ignored version remains visible and installable in About. The ignored
+                    // preference is used only to suppress an automatic reminder.
+                    state.latest_release = Some(release.clone());
+                    window.set_update_available(true);
+                    window.set_ignored_update_version(if ignored {
+                        release.version.to_string().into()
+                    } else {
+                        "".into()
+                    });
+                    window.set_latest_update_version(release.version.to_string().into());
+                    window.set_latest_update_notes(short_update_notes(&release.body).into());
+                    window.set_update_status_text(
+                        if ignored {
+                            format!("v{} 已忽略自动提醒；仍可在此页手动升级", release.version)
+                        } else if mode == "automatic" {
+                            format!("发现新版本 v{}", release.version)
+                        } else {
+                            format!("检查完成：发现新版本 v{}", release.version)
+                        }
+                        .into(),
+                    );
+                    window.set_update_status_error(false);
+                    if mode == "automatic" && !ignored {
+                        window.invoke_automatic_update_found(release.version.to_string().into());
+                    }
+                }
+                Err(error) => {
+                    window.set_update_status_text(error.into());
+                    window.set_update_status_error(true);
+                }
+            }
+        });
+    });
+}
+
+fn short_update_notes(notes: &str) -> String {
+    let normalized = notes.trim();
+    if normalized.is_empty() {
+        "发布说明将在安装前显示。".to_owned()
+    } else {
+        normalized.chars().take(180).collect()
+    }
+}
+
+fn download_and_start_update(
+    main_window_weak: &slint::Weak<AppWindow>,
+    update_state: &UpdateStateSlot,
+    application_data_directory: &std::path::Path,
+) {
+    let release = {
+        let mut state = lock_unpoisoned(update_state);
+        if state.downloading {
+            return;
+        }
+        let Some(release) = state.latest_release.clone() else {
+            return;
+        };
+        state.downloading = true;
+        release
+    };
+    if let Some(window) = main_window_weak.upgrade() {
+        window.set_update_status_text(format!("正在下载 v{}…", release.version).into());
+        window.set_update_status_error(false);
+    }
+    let window_weak = main_window_weak.clone();
+    let update_state = Arc::clone(update_state);
+    let temporary_directory = application_data_directory.join(UPDATE_TEMPORARY_DIRECTORY);
+    thread::spawn(move || {
+        let result =
+            update::download_and_verify(&release, &temporary_directory, |_downloaded, _total| {});
+        let _ = window_weak.upgrade_in_event_loop(move |window| {
+            lock_unpoisoned(&update_state).downloading = false;
+            match result {
+                Ok(installer) => match launch_installer(&installer) {
+                    Ok(()) => {
+                        window
+                            .set_update_status_text("已启动安装程序；应用即将退出完成升级".into());
+                        window.set_update_status_error(false);
+                        let _ = slint::quit_event_loop();
+                    }
+                    Err(error) => {
+                        window.set_update_status_text(error.into());
+                        window.set_update_status_error(true);
+                    }
+                },
+                Err(error) => {
+                    window.set_update_status_text(error.into());
+                    window.set_update_status_error(true);
+                }
+            }
+        });
+    });
+}
+
 fn mark_unsaved(main_window: &slint::Weak<AppWindow>) {
     if let Some(window) = main_window.upgrade() {
         window.set_has_unsaved_settings(true);
@@ -1040,6 +1664,7 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
     window.set_intercept_send_button(settings.intercept_send_button);
     window.set_unknown_context_behavior(unknown_behavior_to_ui(settings.unknown_context_behavior));
     window.set_start_with_windows(settings.start_with_windows);
+    window.set_auto_check_updates(settings.auto_check_updates);
     window.set_log_retention_days(settings.log_retention_days.to_string().into());
     window.set_weixin_executable_path(
         settings
@@ -1049,6 +1674,14 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
             .into(),
     );
     window.set_has_unsaved_settings(false);
+    if let Ok(local_app_data) = local_app_data_directory() {
+        window.set_log_directory(
+            default_audit_log_directory(&local_app_data)
+                .display()
+                .to_string()
+                .into(),
+        );
+    }
     render_chat_list(window, settings, selected_chat_id);
 }
 
@@ -1136,6 +1769,7 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
     settings.intercept_send_button = window.get_intercept_send_button();
     settings.shift_enter_pass_through = true;
     settings.start_with_windows = window.get_start_with_windows();
+    settings.auto_check_updates = window.get_auto_check_updates();
     settings.log_retention_days =
         parse_bounded_u32(&window.get_log_retention_days(), 1, 30, "日志保留天数")?;
     settings.trusted_weixin_executable_path =

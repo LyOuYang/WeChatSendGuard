@@ -204,6 +204,8 @@ pub enum ConfirmationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingConfirmation {
     pub attempt_id: Uuid,
+    /// One opaque ID ties the complete content-free diagnostic chain to this send attempt.
+    pub trace_id: Uuid,
     pub original_context: ChatContext,
     pub decision: ProtectionDecision,
     pub is_numpad_enter: bool,
@@ -248,6 +250,7 @@ impl SendGuardStateMachine {
         context: ChatContext,
         decision: ProtectionDecision,
         is_numpad_enter: bool,
+        trace_id: Uuid,
         timeout: Duration,
         now: SystemTime,
     ) -> Option<PendingConfirmation> {
@@ -258,6 +261,7 @@ impl SendGuardStateMachine {
 
         let pending = PendingConfirmation {
             attempt_id: Uuid::new_v4(),
+            trace_id,
             original_context: context,
             decision,
             is_numpad_enter,

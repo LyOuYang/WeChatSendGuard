@@ -27,7 +27,9 @@ pub use audit::{WindowsAuditLog, default_audit_log_directory};
 #[cfg(windows)]
 pub use context::{SendButtonDiagnostic, WindowsContextMonitor, WindowsContextProvider};
 #[cfg(windows)]
-pub use file_dialog::{select_protected_chat_export, select_protected_chat_import};
+pub use file_dialog::{
+    select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
+};
 #[cfg(windows)]
 pub use hook::{KeyboardKey, KeyboardStroke, MouseClick, WindowsKeyboardHook, WindowsMouseHook};
 #[cfg(windows)]

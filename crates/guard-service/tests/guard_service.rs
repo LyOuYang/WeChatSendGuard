@@ -117,6 +117,42 @@ fn send_button_click_uses_the_same_confirmation_and_injection_path_as_enter() {
 }
 
 #[test]
+fn send_button_trace_is_preserved_through_confirmation_and_injection() {
+    let context = protected_context("工作群");
+    let platform = Arc::new(FakeChatContextProvider::new(context));
+    let injector = Arc::new(RecordingInputInjector::default());
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        injector,
+        audit.clone(),
+    );
+    let trace_id = uuid::Uuid::new_v4();
+
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_send_button_click_with_trace(42, trace_id, fixed_now())
+    else {
+        panic!("protected send-button click should request confirmation");
+    };
+    assert_eq!(pending.trace_id, trace_id);
+    assert!(matches!(
+        service.complete_confirmation(
+            &pending,
+            ConfirmationOutcome::Confirmed,
+            fixed_now() + Duration::from_secs(1),
+        ),
+        CompletionResult::Injected
+    ));
+    assert!(
+        audit
+            .entries()
+            .iter()
+            .all(|entry| entry.trace_id == Some(trace_id))
+    );
+}
+
+#[test]
 fn disabled_send_button_strategy_passes_the_click_through() {
     let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
     let service = GuardService::new(
@@ -207,6 +243,24 @@ fn shift_and_injected_events_always_pass_through_in_safe_tests() {
         ),
         EnterHandling::PassThrough
     );
+}
+
+#[test]
+fn unrelated_application_enters_are_not_written_to_the_diagnostic_log() {
+    let platform = Arc::new(FakeChatContextProvider::new(ChatContext::inactive()));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), fixed_now()),
+        EnterHandling::PassThrough
+    );
+    assert!(audit.entries().is_empty());
 }
 
 #[test]

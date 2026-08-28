@@ -14,8 +14,14 @@ path = "src/main.rs"
 [dependencies]
 slint.workspace = true
 raw-window-handle.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 windows.workspace = true
+zip.workspace = true
 wechat-send-guard-core = { path = "../guard-core" }
 wechat-send-guard-desktop-ui = { path = "../desktop-ui" }
 wechat-send-guard-platform-api = { path = "../platform-api" }

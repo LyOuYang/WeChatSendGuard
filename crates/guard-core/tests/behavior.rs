@@ -214,6 +214,7 @@ fn unknown_context_obeys_configured_policy_and_never_revalidates_for_injection()
                 protected_chat: None,
             },
             false,
+            Uuid::new_v4(),
             Duration::from_secs(10),
             fixed_now(),
         )
@@ -312,6 +313,28 @@ fn missing_send_button_interception_defaults_to_enabled() {
 }
 
 #[test]
+fn legacy_settings_enable_update_checks_and_sanitize_an_empty_ignored_version() {
+    let mut fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/settings-schema-v2.json"))
+            .expect("fixture should deserialize as JSON");
+    let object = fixture
+        .as_object_mut()
+        .expect("fixture should be a JSON object");
+    object.remove("autoCheckUpdates");
+    object.insert(
+        "ignoredUpdateVersion".into(),
+        serde_json::Value::String("  ".into()),
+    );
+
+    let settings: AppSettings = serde_json::from_value(fixture)
+        .expect("legacy settings should deserialize without update preferences");
+    let settings = settings.sanitize();
+
+    assert!(settings.auto_check_updates);
+    assert_eq!(settings.ignored_update_version, None);
+}
+
+#[test]
 fn settings_store_recovers_from_invalid_json_and_replaces_existing_file() {
     let directory = std::env::temp_dir().join(format!("WeChatSendGuard-core-{}", Uuid::new_v4()));
     let path = directory.join("settings.json");
@@ -388,6 +411,7 @@ fn confirmed_unchanged_chat_injects_once_but_changed_or_expired_chat_does_not() 
             context.clone(),
             decision.clone(),
             false,
+            Uuid::new_v4(),
             Duration::from_secs(10),
             fixed_now(),
         )
@@ -409,6 +433,7 @@ fn confirmed_unchanged_chat_injects_once_but_changed_or_expired_chat_does_not() 
             context.clone(),
             decision.clone(),
             false,
+            Uuid::new_v4(),
             Duration::from_secs(10),
             fixed_now(),
         )
@@ -429,6 +454,7 @@ fn confirmed_unchanged_chat_injects_once_but_changed_or_expired_chat_does_not() 
             context.clone(),
             decision,
             false,
+            Uuid::new_v4(),
             Duration::from_secs(5),
             fixed_now(),
         )
@@ -458,6 +484,7 @@ fn holding_confirmation_extends_deadline_and_prevents_timeout() {
             context.clone(),
             decision,
             false,
+            Uuid::new_v4(),
             Duration::from_secs(3),
             fixed_now(),
         )
@@ -490,6 +517,7 @@ fn only_one_confirmation_can_be_pending() {
                 group_editor(Some("工作群")),
                 decision.clone(),
                 false,
+                Uuid::new_v4(),
                 Duration::from_secs(10),
                 fixed_now(),
             )
@@ -501,6 +529,7 @@ fn only_one_confirmation_can_be_pending() {
                 group_editor(Some("工作群")),
                 decision,
                 false,
+                Uuid::new_v4(),
                 Duration::from_secs(10),
                 fixed_now(),
             )

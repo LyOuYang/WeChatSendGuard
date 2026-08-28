@@ -63,4 +63,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Release verification failed."
 }
 
-Get-Item -LiteralPath $installerPath | Select-Object FullName, Length, LastWriteTime
+$checksumPath = "$installerPath.sha256"
+$sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+"$sha256  $(Split-Path -Leaf $installerPath)" |
+    Set-Content -LiteralPath $checksumPath -Encoding ascii -NoNewline
+
+Get-Item -LiteralPath $installerPath, $checksumPath | Select-Object FullName, Length, LastWriteTime

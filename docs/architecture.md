@@ -2,9 +2,9 @@
 
 ## 版本与范围
 
-`1.0.0` 是 WeChatSendGuard 的第一个正式发布版本。当前只实现并交付 Windows 10/11 x64；macOS 和 Linux 没有隐藏的实验实现，也不共享 Windows 二进制、安装器或系统 API。
+`1.1.0` 是 WeChatSendGuard 的当前正式发布版本。当前只实现并交付 Windows 10/11 x64；macOS 和 Linux 没有隐藏的实验实现，也不共享 Windows 二进制、安装器或系统 API。
 
-本项目的目标是在受支持的微信桌面版中，为一次 `Enter` 发送增加可取消的确认步骤。架构把产品规则、界面和操作系统集成拆开：后续平台可以复用规则与界面契约，但必须独立实现自己的受信任进程识别、前台上下文读取和输入控制。
+本项目的目标是在受支持的微信桌面版中，为一次 `Enter` 或点击“发送”按钮的消息发送增加可取消的确认步骤。用户可选择仅保护指定名单，或启用全局防护（白名单）模式。架构把产品规则、界面和操作系统集成拆开：后续平台可以复用规则与界面契约，但必须独立实现自己的受信任进程识别、前台上下文读取和输入控制。
 
 ## 目录与职责
 
@@ -40,7 +40,7 @@ WeChatSendGuard 是一个单进程的原生 Windows 应用，不包含浏览器�
 | Rust + Slint | 设置界面、确认窗和本地规则 | 应用自身 |
 | Windows 窗口与进程 API | 读取前台窗口，验证受信任的 `Weixin.exe` 路径与权限 | Windows 自带 |
 | UI Automation（无障碍） | 读取微信公开暴露的会话标题、会话类型、消息编辑框与焦点 | Windows 自带 |
-| 键盘钩子与 `SendInput` | 暂停物理 `Enter`，在确认后补发一次带标记的 `Enter` | Windows 自带 |
+| 键盘/鼠标钩子与 `SendInput` | 暂停物理 `Enter` 或已识别的发送按钮点击，在确认后补发一次带标记的 `Enter` | Windows 自带 |
 
 UI Automation、控件树、事件订阅和缓存不是四套额外依赖：它们都是同一个 Windows 无障碍接口的不同用法。控件树是目标窗口公开的界面目录；应用仅在其中查找完成会话识别所需的控件。UI Automation 不能拦截物理按键，因此键盘钩子仍是发送守护不可替代的一部分。
 
@@ -49,8 +49,8 @@ UI Automation、控件树、事件订阅和缓存不是四套额外依赖：它�
 ## 运行时链路
 
 ```text
-物理 Enter
-  → Windows 键盘钩子（只读取缓存的前台快照）
+物理 Enter 或已识别的“发送”按钮点击
+  → Windows 输入钩子（只读取缓存的前台快照）
   → GuardService
   → guard-core 规则判定
   ├─ 放行：原始按键继续
@@ -82,11 +82,11 @@ C:\Program Files\Tencent\Weixin\Weixin.exe
 
 保存路径设置时，`desktop-app` 会先持久化设置，再让 `WindowsContextProvider` 使旧前台快照失效并重新观察。路径无效、进程访问失败、权限级别不一致、UI Automation 控件缺失、聊天身份或编辑框焦点无法确认时，前台上下文均视为不可保护，绝不注入按键。
 
-Windows 适配器仅读取公开的 UI Automation 元数据：会话标题、群聊/联系人类型、消息编辑框和焦点。它不读取微信数据库、进程内存、剪贴板或截图，不注入 DLL，也不访问网络。
+Windows 适配器仅读取公开的 UI Automation 元数据：会话标题、群聊/联系人类型、消息编辑框和焦点。它不读取微信数据库、进程内存、剪贴板或截图，也不注入 DLL。发送保护链路不访问网络；仅应用更新模块会在用户开启自动检查或主动操作时通过 HTTPS 访问 GitHub Releases。
 
 ## 配置、数据与版本
 
-设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.0.0`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径，因此无需升级 `schemaVersion`。
+设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.1.0`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径，因此无需升级 `schemaVersion`。
 
 默认路径不会写进 JSON；自定义路径会以如下形式保存：
 
@@ -96,11 +96,11 @@ Windows 适配器仅读取公开的 UI Automation 元数据：会话标题、群
 }
 ```
 
-设置通过同目录临时文件和替换操作原子写入。损坏的 JSON 回退到安全默认设置。名单修改、名单模式切换和发送守护开关会即时保存并生效；其他设置由“保存设置”统一提交。审计日志采用 JSON Lines，位于 `%LocalAppData%\WeChatSendGuard\logs`，只保留时间、会话 ID、事件类型和结果，不记录会话名称或草稿内容。
+设置通过同目录临时文件和替换操作原子写入。损坏的 JSON 回退到安全默认设置。名单修改、名单模式切换、发送守护开关和自动检查更新开关会即时保存并生效；其他设置由“保存设置”统一提交。更新偏好 `autoCheckUpdates` 默认开启，`ignoredUpdateVersion` 只抑制该版本的自动提醒，不隐藏“关于”页的手动升级入口。审计日志采用 JSON Lines，位于 `%LocalAppData%\WeChatSendGuard\logs`，记录时间、匿名链路 ID、会话 ID、事件类型、结果和必要环境版本；不记录会话名称或草稿内容，并受 1–30 天、单文件 1 MiB、总量 50 MiB 的边界约束。
 
 ## 界面边界
 
-Slint 是当前和后续平台共用的界面技术。`crates/desktop-ui/ui/app.slint` 是界面和可见交互的唯一基线：三段式设置导航、浮出式主窗口、托盘恢复、确认窗定位、Esc 取消、长按进度、路径设置和中文状态语义都在此约定。
+Slint 是当前和后续平台共用的界面技术。`crates/desktop-ui/ui/app.slint` 是界面和可见交互的唯一基线：四段式设置导航、浮出式主窗口、托盘恢复、确认窗定位、Esc 取消、长按进度、路径设置、日志诊断和应用更新状态都在此约定。
 
 系统窗口句柄、托盘菜单对象、文件选择器和启动项属于平台适配器。界面只通过回调表达“保存路径”“恢复默认”“打开设置”等意图；组合根负责将这些意图交给当前平台服务。
 

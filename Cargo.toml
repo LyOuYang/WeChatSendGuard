@@ -18,7 +18,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Proprietary"
@@ -27,6 +27,10 @@ authors = ["WeChatSendGuard contributors"]
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+semver = "1.0.28"
+sha2 = "0.10.9"
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 uuid = { version = "1.23.4", features = ["serde", "v4"] }
 raw-window-handle = "0.6.2"
 windows = { version = "0.62.2", features = [
@@ -35,6 +39,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Storage_FileSystem",
     "Win32_UI_Accessibility",
     "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -47,7 +53,7 @@ windows = { version = "0.62.2", features = [
 slint = { version = "=1.17.1", default-features = false, features = [
     "std",
     "backend-winit",
-    "renderer-femtovg",
+    "renderer-skia",
     "renderer-software",
     "accessibility",
     "compat-1-2",

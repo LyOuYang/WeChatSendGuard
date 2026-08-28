@@ -158,6 +158,10 @@ pub struct AppSettings {
     pub intercept_send_button: bool,
     pub shift_enter_pass_through: bool,
     pub start_with_windows: bool,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignored_update_version: Option<String>,
     pub log_retention_days: u32,
     /// Optional Windows adapter override. When absent, the adapter uses its built-in supported
     /// executable path instead of making the domain layer own a Windows file-system default.
@@ -180,6 +184,8 @@ impl Default for AppSettings {
             intercept_send_button: true,
             shift_enter_pass_through: true,
             start_with_windows: false,
+            auto_check_updates: true,
+            ignored_update_version: None,
             log_retention_days: 7,
             trusted_weixin_executable_path: None,
         }
@@ -193,6 +199,9 @@ impl AppSettings {
         self.exempted_chats = sanitize_chat_list(self.exempted_chats);
         self.confirmation = self.confirmation.sanitize();
         self.shift_enter_pass_through = true;
+        self.ignored_update_version = self
+            .ignored_update_version
+            .and_then(|version| (!version.trim().is_empty()).then(|| version.trim().to_owned()));
         self.log_retention_days = self.log_retention_days.clamp(1, 30);
         self
     }
