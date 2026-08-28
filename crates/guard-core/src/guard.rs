@@ -317,10 +317,10 @@ impl SendGuardStateMachine {
             return;
         }
         let mut current = lock_unpoisoned(&self.pending);
-        if let Some(pending) = current.as_mut() {
-            if pending.attempt_id == attempt_id {
-                pending.expires_at += duration;
-            }
+        if let Some(pending) = current.as_mut()
+            && pending.attempt_id == attempt_id
+        {
+            pending.expires_at += duration;
         }
     }
 

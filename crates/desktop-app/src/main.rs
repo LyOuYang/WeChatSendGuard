@@ -388,8 +388,36 @@ fn run_ui_preview(settings: AppSettings) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(debug_assertions)]
-fn run_ui_snapshot(settings: AppSettings, active_page: i32) -> Result<(), Box<dyn Error>> {
+fn run_ui_snapshot(mut settings: AppSettings, active_page: i32) -> Result<(), Box<dyn Error>> {
     let window = AppWindow::new()?;
+    if settings.protected_chats.is_empty() {
+        settings.protected_chats = vec![
+            ProtectedChat {
+                id: Uuid::new_v4(),
+                display_name: "陈浩洋".into(),
+                match_title: "陈浩洋".into(),
+                target_kind: ChatTargetKind::Contact,
+                aliases: vec![],
+                enabled: true,
+            },
+            ProtectedChat {
+                id: Uuid::new_v4(),
+                display_name: "健康日".into(),
+                match_title: "健康日".into(),
+                target_kind: ChatTargetKind::Group,
+                aliases: vec![],
+                enabled: true,
+            },
+            ProtectedChat {
+                id: Uuid::new_v4(),
+                display_name: "技术项目交付群".into(),
+                match_title: "技术项目交付群".into(),
+                target_kind: ChatTargetKind::Group,
+                aliases: vec![],
+                enabled: true,
+            },
+        ];
+    }
     render_settings(&window, &settings, None);
     let active_page = active_page.clamp(0, 2);
     window.set_active_page(active_page);
