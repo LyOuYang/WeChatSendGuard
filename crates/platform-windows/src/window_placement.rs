@@ -10,8 +10,8 @@ use windows::Win32::{
         Input::KeyboardAndMouse::SetFocus,
         WindowsAndMessaging::{
             BringWindowToTop, GetCursorPos, GetForegroundWindow, GetWindowRect,
-            GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
-            SW_SHOW,
+            GetWindowThreadProcessId, IsIconic, SW_RESTORE, SW_SHOW, SetForegroundWindow,
+            ShowWindow,
         },
     },
 };
@@ -123,12 +123,11 @@ fn clamp_to_i32(value: i64) -> i32 {
 pub fn enable_high_dpi_awareness() {
     unsafe {
         use windows::Win32::UI::HiDpi::{
-            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
         };
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 }
-
 
 #[cfg(test)]
 mod tests {

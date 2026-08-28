@@ -33,7 +33,6 @@ fn physical_enter() -> PhysicalEnter {
         is_numpad_enter: false,
         is_injected: false,
         shift_pressed: false,
-        ime_composing: false,
         foreground_window: 42,
     }
 }
@@ -173,7 +172,7 @@ fn fake_platform_rejects_changed_context_before_recording_any_input() {
 }
 
 #[test]
-fn shift_ime_and_injected_events_always_pass_through_in_safe_tests() {
+fn shift_and_injected_events_always_pass_through_in_safe_tests() {
     let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
     let service = GuardService::new(
         AppSettings {
@@ -192,16 +191,6 @@ fn shift_ime_and_injected_events_always_pass_through_in_safe_tests() {
         service.handle_physical_enter(
             PhysicalEnter {
                 shift_pressed: true,
-                ..physical_enter()
-            },
-            fixed_now()
-        ),
-        EnterHandling::PassThrough
-    );
-    assert_eq!(
-        service.handle_physical_enter(
-            PhysicalEnter {
-                ime_composing: true,
                 ..physical_enter()
             },
             fixed_now()

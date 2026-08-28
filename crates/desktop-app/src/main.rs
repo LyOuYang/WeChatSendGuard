@@ -30,12 +30,11 @@ use wechat_send_guard_desktop_ui::{
 };
 use wechat_send_guard_platform_api::{AuditLog, ChatContextProvider, StartupRegistration};
 use wechat_send_guard_platform_windows::{
-    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog,
-    WindowsContextMonitor, WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook,
-    WindowsMouseHook, WindowsStartupRegistration,
-    activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
-    enable_high_dpi_awareness, is_valid_weixin_executable_path, path_matches_trusted_weixin,
-    select_protected_chat_export, select_protected_chat_import,
+    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog, WindowsContextMonitor,
+    WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsMouseHook,
+    WindowsStartupRegistration, activate_window, center_popup_over_window, cursor_screen_position,
+    default_audit_log_directory, enable_high_dpi_awareness, is_valid_weixin_executable_path,
+    path_matches_trusted_weixin, select_protected_chat_export, select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
 
@@ -131,8 +130,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     #[cfg(debug_assertions)]
     if let Some(pos) = arguments.iter().position(|a| a == "--ui-snapshot") {
-        let page = arguments.get(pos + 1).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
-        let enabled = arguments.get(pos + 2).map(|s| s != "0" && s != "false").unwrap_or(true);
+        let page = arguments
+            .get(pos + 1)
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0);
+        let enabled = arguments
+            .get(pos + 2)
+            .map(|s| s != "0" && s != "false")
+            .unwrap_or(true);
         let mut settings = AppSettings::default().sanitize();
         settings.enabled = enabled;
         return run_ui_snapshot(settings, page);
@@ -232,15 +237,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             return true;
         }
 
+        let now = SystemTime::now();
         let handling = hook_service.handle_physical_enter(
             PhysicalEnter {
                 is_numpad_enter: stroke.is_numpad_enter,
                 is_injected: stroke.is_injected,
                 shift_pressed: stroke.shift_pressed,
-                ime_composing: stroke.ime_composing,
                 foreground_window: stroke.foreground_window,
             },
-            SystemTime::now(),
+            now,
         );
 
         match handling {
@@ -397,7 +402,9 @@ fn run_ui_snapshot(settings: AppSettings, active_page: i32) -> Result<(), Box<dy
     };
     window.set_status_text(status.into());
     window.set_status_healthy(enabled);
-    let snapshot_path = std::env::temp_dir().join(format!("WeChatSendGuard-ui-preview-{active_page}-{enabled_suffix}.ppm"));
+    let snapshot_path = std::env::temp_dir().join(format!(
+        "WeChatSendGuard-ui-preview-{active_page}-{enabled_suffix}.ppm"
+    ));
     capture_component_snapshot(&window, snapshot_path)
 }
 
@@ -407,6 +414,7 @@ fn run_confirmation_snapshot() -> Result<(), Box<dyn Error>> {
     window.set_target_kind("群聊".into());
     window.set_target_name("测试会话".into());
     window.set_draft_preview("这是一段仅用于界面像素校验的示例文本，不会发送。".into());
+    window.set_draft_preview_ready(true);
     window.set_confirmation_mode(1);
     window.set_hold_milliseconds(800);
     window.set_confirm_label("按住确认 (0.8s)".into());
@@ -431,7 +439,9 @@ where
 
     component.show()?;
     Timer::single_shot(Duration::from_millis(600), move || {
-        let Some(comp) = component_weak.upgrade() else { return; };
+        let Some(comp) = component_weak.upgrade() else {
+            return;
+        };
         comp.window().request_redraw();
         let component_weak2 = comp.as_weak();
         Timer::single_shot(Duration::from_millis(300), move || {
@@ -1389,6 +1399,7 @@ fn configure_confirmation_window(
     window.set_hold_milliseconds(settings.hold_milliseconds as i32);
     window.set_required_phrase(settings.phrase.clone().into());
     window.set_phrase_value("".into());
+    window.set_draft_preview_ready(false);
     window.set_confirm_label(confirm_label.into());
     window.set_hold_progress(0.0);
     window.set_countdown_progress(100.0);
@@ -1468,8 +1479,7 @@ fn start_timeout_timer(
         *rem = rem.saturating_sub(delta);
         let percent = (rem.as_secs_f32() / total.as_secs_f32() * 100.0).clamp(0.0, 100.0);
         confirmation.set_countdown_progress(percent);
-        confirmation
-            .set_countdown_text(format!("{:.1} 秒后自动取消", rem.as_secs_f32()).into());
+        confirmation.set_countdown_text(format!("{:.1} 秒后自动取消", rem.as_secs_f32()).into());
 
         if rem.is_zero() {
             finish_confirmation(
@@ -1519,6 +1529,7 @@ fn enrich_confirmation_preview(
         let preview = pending.draft_preview.unwrap_or_default();
         let _ = confirmation_weak.upgrade_in_event_loop(move |confirmation| {
             confirmation.set_draft_preview(preview.into());
+            confirmation.set_draft_preview_ready(true);
         });
     });
 }

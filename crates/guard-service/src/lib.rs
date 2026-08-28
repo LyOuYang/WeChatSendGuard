@@ -24,7 +24,6 @@ pub struct PhysicalEnter {
     pub is_numpad_enter: bool,
     pub is_injected: bool,
     pub shift_pressed: bool,
-    pub ime_composing: bool,
     pub foreground_window: isize,
 }
 
@@ -90,7 +89,6 @@ impl GuardService {
         if !settings.intercept_keyboard_enter
             || (enter.is_numpad_enter && !settings.intercept_numpad_enter)
             || (settings.shift_enter_pass_through && enter.shift_pressed)
-            || enter.ime_composing
         {
             return EnterHandling::PassThrough;
         }

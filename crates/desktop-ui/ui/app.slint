@@ -863,7 +863,7 @@ export component SlintAboutWindow inherits Window {
 export component ConfirmationWindow inherits Window {
     title: "发送确认";
     width: 460px;
-    height: 268px + (root.draft-preview != "" ? 54px : 0px) + (root.confirmation-mode == 2 ? 40px : 0px);
+    height: 322px + (root.confirmation-mode == 2 ? 40px : 0px);
     no-frame: true;
     always-on-top: true;
     background: #ffffff;
@@ -873,6 +873,7 @@ export component ConfirmationWindow inherits Window {
     in-out property <string> target-kind: "群聊";
     in-out property <string> target-name: "当前会话";
     in-out property <string> draft-preview: "";
+    in-out property <bool> draft-preview-ready: false;
     in-out property <int> confirmation-mode: 1;
     in-out property <int> hold-milliseconds: 800;
     in-out property <string> required-phrase: "确认发送";
@@ -982,8 +983,7 @@ export component ConfirmationWindow inherits Window {
                     }
                 }
                 draft-container := Rectangle {
-                    height: root.draft-preview != "" ? 54px : 0px;
-                    visible: root.draft-preview != "";
+                    height: 54px;
                     border-radius: 8px;
                     background: #f8fafc;
                     border-width: 1px;
@@ -1002,8 +1002,8 @@ export component ConfirmationWindow inherits Window {
                         y: 22px;
                         width: parent.width - 20px;
                         height: parent.height - 28px;
-                        text: root.draft-preview;
-                        color: #111827;
+                        text: root.draft-preview != "" ? root.draft-preview : (root.draft-preview-ready ? "未读取到待发送内容" : "正在读取待发送内容...");
+                        color: root.draft-preview != "" ? #111827 : #94a3b8;
                         font-size: 11px;
                         wrap: word-wrap;
                         overflow: elide;

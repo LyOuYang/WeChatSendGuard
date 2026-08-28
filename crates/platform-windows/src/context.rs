@@ -183,10 +183,7 @@ impl WindowsContextProvider {
         };
 
         *write_unpoisoned(&self.last_recognized_chat) = None;
-        self.publish(
-            ChatContext::default(),
-            generation,
-        );
+        self.publish(ChatContext::default(), generation);
         let _ = self.refresh_foreground();
     }
 
@@ -240,11 +237,7 @@ impl WindowsContextProvider {
         self.publish_with_button(candidate, send_button, trust_generation)
     }
 
-    fn publish(
-        &self,
-        candidate: ChatContext,
-        trust_generation: u64,
-    ) -> ChatContext {
+    fn publish(&self, candidate: ChatContext, trust_generation: u64) -> ChatContext {
         self.publish_with_button(
             candidate,
             SendButtonSnapshot::not_observed(0, None),
@@ -539,20 +532,23 @@ fn inspect_supported_weixin_window(
 
         let send_button = find_send_button_snapshot(automation, &root, window_handle, observed_at);
 
-        Ok((ChatContext {
-            window_handle,
-            process_id: trust.process_id,
-            process_path: trust.process_path,
-            is_trusted_weixin: true,
-            requires_elevation: trust.requires_elevation,
-            is_compatibility_available: editor.is_some() && target_kind.is_some(),
-            is_message_editor_focused,
-            is_group_chat: target_kind == Some(ChatTargetKind::Group),
-            is_contact_chat: target_kind == Some(ChatTargetKind::Contact),
-            chat_title,
-            generation: 0,
-            observed_at: Some(observed_at),
-        }, send_button))
+        Ok((
+            ChatContext {
+                window_handle,
+                process_id: trust.process_id,
+                process_path: trust.process_path,
+                is_trusted_weixin: true,
+                requires_elevation: trust.requires_elevation,
+                is_compatibility_available: editor.is_some() && target_kind.is_some(),
+                is_message_editor_focused,
+                is_group_chat: target_kind == Some(ChatTargetKind::Group),
+                is_contact_chat: target_kind == Some(ChatTargetKind::Contact),
+                chat_title,
+                generation: 0,
+                observed_at: Some(observed_at),
+            },
+            send_button,
+        ))
     })
 }
 
@@ -662,7 +658,11 @@ fn find_send_button_snapshot(
     } else {
         SendButtonSnapshotState::Disabled
     };
-    SendButtonSnapshot { state, bounds, ..base }
+    SendButtonSnapshot {
+        state,
+        bounds,
+        ..base
+    }
 }
 
 fn find_descendant(
@@ -867,7 +867,7 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SendButtonDiagnostic, SendButtonSnapshot, SendButtonSnapshotState, ScreenRect,
+        ScreenRect, SendButtonDiagnostic, SendButtonSnapshot, SendButtonSnapshotState,
         TRUSTED_WEIXIN_PATH, WindowsContextProvider, normalize_draft_preview,
         resolved_trusted_weixin_path,
     };

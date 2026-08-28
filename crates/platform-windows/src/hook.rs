@@ -7,17 +7,14 @@ use std::{
 };
 use wechat_send_guard_platform_api::{PlatformError, PlatformResult};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{LPARAM, LRESULT, WPARAM},
     UI::{
-        Input::{
-            Ime::{GCS_COMPSTR, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext},
-            KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_RETURN, VK_SHIFT},
-        },
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_RETURN, VK_SHIFT},
         WindowsAndMessaging::{
             CallNextHookEx, GetForegroundWindow, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
-            LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, SetWindowsHookExW,
-            UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
-            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx,
+            WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+            WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
 };
@@ -37,7 +34,6 @@ pub struct KeyboardStroke {
     pub is_numpad_enter: bool,
     pub is_injected: bool,
     pub shift_pressed: bool,
-    pub ime_composing: bool,
     pub foreground_window: isize,
 }
 
@@ -310,16 +306,10 @@ unsafe extern "system" fn low_level_mouse_proc(
             let data = unsafe { (lparam.0 as *const MSLLHOOKSTRUCT).read_unaligned() };
             match wparam.0 as u32 {
                 WM_LBUTTONDOWN if handle_left_mouse_down(&state, data) => {
-                    state
-                        .suppress_left_button_up
-                        .store(true, Ordering::Release);
+                    state.suppress_left_button_up.store(true, Ordering::Release);
                     return LRESULT(1);
                 }
-                WM_LBUTTONUP
-                    if state
-                        .suppress_left_button_up
-                        .swap(false, Ordering::AcqRel) =>
-                {
+                WM_LBUTTONUP if state.suppress_left_button_up.swap(false, Ordering::AcqRel) => {
                     return LRESULT(1);
                 }
                 _ => {}
@@ -364,7 +354,6 @@ fn handle_key_down(state: &HookState, data: KBDLLHOOKSTRUCT, key: KeyboardKey) -
         is_numpad_enter: key == KeyboardKey::Enter && data.flags.contains(LLKHF_EXTENDED),
         is_injected,
         shift_pressed,
-        ime_composing: key == KeyboardKey::Enter && is_ime_composing(foreground_window),
         foreground_window,
     };
 
@@ -409,24 +398,6 @@ fn keyboard_key_from_virtual_key(virtual_key: u32) -> Option<KeyboardKey> {
     }
 }
 
-fn is_ime_composing(window_handle: isize) -> bool {
-    if window_handle == 0 {
-        return false;
-    }
-
-    // SAFETY: HWND is a copied native value. IMM returns a temporary context that we release.
-    let input_context = unsafe { ImmGetContext(HWND(window_handle as _)) };
-    if input_context.0.is_null() {
-        return false;
-    }
-    // SAFETY: the input context is valid until the matching release below; passing no buffer asks
-    // only for the byte count of the in-progress composition string.
-    let composing = unsafe { ImmGetCompositionStringW(input_context, GCS_COMPSTR, None, 0) } > 0;
-    // SAFETY: this releases exactly the context acquired above.
-    let _ = unsafe { ImmReleaseContext(HWND(window_handle as _), input_context) };
-    composing
-}
-
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -453,7 +424,6 @@ mod tests {
             is_numpad_enter: true,
             is_injected: false,
             shift_pressed: false,
-            ime_composing: false,
             foreground_window: 42,
         };
         assert!(stroke.is_numpad_enter);
