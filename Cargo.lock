@@ -5905,7 +5905,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-send-guard"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "raw-window-handle",
  "reqwest",
@@ -5927,7 +5927,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-send-guard-core"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5936,7 +5936,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-send-guard-desktop-ui"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "slint",
  "slint-build",
@@ -5944,14 +5944,14 @@ dependencies = [
 
 [[package]]
 name = "wechat-send-guard-platform-api"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "wechat-send-guard-core",
 ]
 
 [[package]]
 name = "wechat-send-guard-platform-windows"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "serde_json",
  "uuid",
@@ -5962,7 +5962,7 @@ dependencies = [
 
 [[package]]
 name = "wechat-send-guard-service"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "uuid",
  "wechat-send-guard-core",

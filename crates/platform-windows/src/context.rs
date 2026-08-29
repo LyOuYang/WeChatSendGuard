@@ -52,7 +52,8 @@ const GROUP_TITLE_CLASS_SUFFIX: &str = "mmui::ChatTitleBarChatRoomView";
 const DRAFT_PREVIEW_LIMIT: usize = 240;
 const FOCUS_RECOVERY_TIMEOUT: Duration = Duration::from_millis(900);
 const FOCUS_RECOVERY_RETRY: Duration = Duration::from_millis(30);
-const SEND_BUTTON_SNAPSHOT_MAX_AGE: Duration = Duration::from_millis(250);
+const SEND_BUTTON_SNAPSHOT_MAX_AGE: Duration = Duration::from_millis(2_500);
+const MONITOR_SCAN_COOLDOWN: Duration = Duration::from_secs(2);
 const INPUT_CANDIDATE_MAX_VERTICAL_GAP: i32 = 160;
 const FALLBACK_SEND_CANDIDATE_MIN_WIDTH: i32 = 96;
 const FALLBACK_SEND_CANDIDATE_MAX_WIDTH: i32 = 220;
@@ -222,6 +223,7 @@ pub struct WindowsContextProvider {
     observed_window: Arc<AtomicIsize>,
     layout_dirty: Arc<AtomicBool>,
     refresh_signal: Arc<RefreshSignal>,
+    last_observation_attempt: Mutex<Option<(isize, Instant)>>,
     last_recognized_chat: RwLock<Option<ChatContext>>,
     trusted_executable: RwLock<TrustedExecutable>,
 }
@@ -259,6 +261,7 @@ impl WindowsContextProvider {
             observed_window: Arc::new(AtomicIsize::new(0)),
             layout_dirty: Arc::new(AtomicBool::new(false)),
             refresh_signal: Arc::new(RefreshSignal::default()),
+            last_observation_attempt: Mutex::new(None),
             last_recognized_chat: RwLock::new(None),
             trusted_executable: RwLock::new(TrustedExecutable {
                 path: resolved_trusted_weixin_path(configured_path),
@@ -351,6 +354,7 @@ impl WindowsContextProvider {
         // SAFETY: GetForegroundWindow has no borrowed inputs and returns an owned value handle.
         let window_handle = unsafe { GetForegroundWindow().0 as isize };
         self.observed_window.store(window_handle, Ordering::Release);
+        *lock_unpoisoned(&self.last_observation_attempt) = Some((window_handle, Instant::now()));
         let scan_started_at = SystemTime::now();
         let (trusted_path, trust_generation) = {
             let trusted = read_unpoisoned(&self.trusted_executable);
@@ -509,6 +513,29 @@ impl WindowsContextProvider {
             observation_id,
             true,
         )
+    }
+
+    /// Reconciles the foreground window for the background monitor. WinEvent notifications pass
+    /// `force = true` and bypass the cooldown; timer wakeups reuse the latest immutable snapshot
+    /// for a short period so a slow or temporarily unavailable UIA provider cannot cause repeated
+    /// full-tree scans. WinEvent notifications remain the fast path for actual changes.
+    fn refresh_foreground_for_monitor(&self, force: bool) -> ChatContext {
+        if !self.observation_enabled() {
+            return read_unpoisoned(&self.current).context.clone();
+        }
+        // SAFETY: GetForegroundWindow has no borrowed inputs and returns an owned value handle.
+        let window_handle = unsafe { GetForegroundWindow().0 as isize };
+        let layout_dirty = self.layout_dirty.load(Ordering::Acquire);
+        let recent_attempt = {
+            let attempt = lock_unpoisoned(&self.last_observation_attempt);
+            attempt.is_some_and(|(attempted_window, started_at)| {
+                attempted_window == window_handle && started_at.elapsed() < MONITOR_SCAN_COOLDOWN
+            })
+        };
+        if !force && !layout_dirty && recent_attempt {
+            return read_unpoisoned(&self.current).context.clone();
+        }
+        self.refresh_foreground()
     }
 
     fn next_observation_id(&self) -> u64 {
@@ -932,7 +959,14 @@ fn is_recognized_chat(context: &ChatContext) -> bool {
 
 impl ChatContextProvider for WindowsContextProvider {
     fn current(&self) -> ChatContext {
-        read_unpoisoned(&self.current).context.clone()
+        let mut context = read_unpoisoned(&self.current).context.clone();
+        if self.layout_dirty.load(Ordering::Acquire) {
+            // A chat/layout event may arrive just before its background UIA refresh completes.
+            // Mark the immutable snapshot stale during that narrow window so it cannot authorize
+            // a pass-through for a chat that may already have changed.
+            context.observed_at = Some(SystemTime::UNIX_EPOCH);
+        }
+        context
     }
 
     fn refresh_now(&self) -> PlatformResult<ChatContext> {
@@ -1075,12 +1109,17 @@ unsafe extern "system" fn window_event_proc(
         return;
     }
 
-    let layout_affecting = (event == EVENT_OBJECT_LOCATIONCHANGE && id_object != OBJID_WINDOW.0)
+    let recognition_affecting = (event == EVENT_OBJECT_LOCATIONCHANGE
+        && id_object != OBJID_WINDOW.0)
         || matches!(
             event,
-            EVENT_OBJECT_HIDE | EVENT_OBJECT_REORDER | EVENT_OBJECT_SHOW
+            EVENT_OBJECT_FOCUS
+                | EVENT_OBJECT_HIDE
+                | EVENT_OBJECT_NAMECHANGE
+                | EVENT_OBJECT_REORDER
+                | EVENT_OBJECT_SHOW
         );
-    if layout_affecting {
+    if recognition_affecting {
         runtime.layout_dirty.store(true, Ordering::Release);
     }
     if matches!(
@@ -1169,24 +1208,32 @@ impl WindowsContextMonitor {
             thread::Builder::new()
                 .name("wsg-context-monitor".to_owned())
                 .spawn(move || {
+                    let mut force_refresh = true;
                     while !stopping.load(Ordering::Acquire) {
                         if !provider.observation_enabled() {
                             let _ = signal.wait(INACTIVE_RECONCILIATION_INTERVAL);
+                            force_refresh = true;
                             continue;
                         }
-                        let context = provider.refresh_foreground();
+                        let context = provider.refresh_foreground_for_monitor(force_refresh);
+                        force_refresh = false;
                         let interval = if context.is_trusted_weixin {
                             ACTIVE_RECONCILIATION_INTERVAL
                         } else {
                             INACTIVE_RECONCILIATION_INTERVAL
                         };
-                        if signal.wait(interval) == RefreshRequest::Debounced {
-                            // A drag/reflow can produce a burst of WinEvent notifications. Extend
-                            // the quiet window only for more layout events; a focus/chat event
-                            // breaks the debounce so the next context scan starts immediately.
-                            while signal.wait(EVENT_DEBOUNCE_INTERVAL) == RefreshRequest::Debounced
-                            {
+                        match signal.wait(interval) {
+                            RefreshRequest::Immediate => force_refresh = true,
+                            RefreshRequest::Debounced => {
+                                // A drag/reflow can produce a burst of WinEvent notifications.
+                                // Extend the quiet window only for more layout events; once the
+                                // burst ends, the next context scan bypasses the cooldown.
+                                while signal.wait(EVENT_DEBOUNCE_INTERVAL)
+                                    == RefreshRequest::Debounced
+                                {}
+                                force_refresh = true;
                             }
+                            RefreshRequest::TimedOut => {}
                         }
                     }
                 })
@@ -1306,12 +1353,27 @@ fn inspect_supported_weixin_window(
     with_automation(|automation| {
         let root = element_from_handle(automation, window_handle)?;
         let editor = find_by_automation_id_suffix(automation, &root, INPUT_AUTOMATION_ID)?;
-        let group_title = find_by_class_name_suffix(automation, &root, GROUP_TITLE_CLASS_SUFFIX)?;
-        let title_root = group_title.as_ref().unwrap_or(&root);
         let title_element =
-            find_by_automation_id_suffix(automation, title_root, CHAT_NAME_AUTOMATION_ID)?;
+            find_by_automation_id_suffix(automation, &root, CHAT_NAME_AUTOMATION_ID)?;
+        // The editor and current-title label are stable anchors shared by both layouts. Their
+        // nearest common ancestor is the chat column, so toolbar/button queries below never enter
+        // a sibling web-view branch in three-pane Weixin.
+        let chat_branch = editor.as_ref().and_then(|editor| {
+            title_element
+                .as_ref()
+                .and_then(|title| find_nearest_common_ancestor(automation, &root, editor, title))
+        });
+        let chat_root = chat_branch.as_ref().unwrap_or(&root);
+        // Some older providers omit the title automation id but still expose the stable group
+        // title-bar class. Keep that compatibility signal inside the selected branch.
+        let group_title =
+            find_by_class_name_suffix(automation, chat_root, GROUP_TITLE_CLASS_SUFFIX)?;
         let chat_title = title_element.as_ref().and_then(read_name);
-        let target_kind = if group_title.is_some() {
+        let is_group_chat = group_title.is_some()
+            || title_element.as_ref().is_some_and(|title| {
+                ancestor_has_class_suffix(automation, &root, title, GROUP_TITLE_CLASS_SUFFIX)
+            });
+        let target_kind = if is_group_chat {
             Some(ChatTargetKind::Group)
         } else if chat_title
             .as_deref()
@@ -1333,7 +1395,13 @@ fn inspect_supported_weixin_window(
                 .and_then(ScreenRect::from_windows_rect)
         });
         let send_button = if inspect_send_button {
-            find_send_button_snapshot(automation, &root, window_handle, observed_at, editor_bounds)
+            find_send_button_snapshot(
+                automation,
+                chat_root,
+                window_handle,
+                observed_at,
+                editor_bounds,
+            )
         } else {
             SendButtonSnapshot::not_observed(window_handle, Some(observed_at))
         };
@@ -1398,6 +1466,61 @@ fn element_from_handle(
         .map_err(|error| PlatformError::new("uia-window-unavailable", error.to_string()))
 }
 
+fn control_view_ancestor_chain(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    element: &IUIAutomationElement,
+) -> Option<Vec<IUIAutomationElement>> {
+    let walker = unsafe { automation.ControlViewWalker() }.ok()?;
+    let mut current = element.clone();
+    let mut chain = vec![current.clone()];
+    for _ in 0..32 {
+        if elements_are_equal(automation, &current, root) {
+            return Some(chain);
+        }
+        let parent = unsafe { walker.GetParentElement(&current) }.ok()?;
+        chain.push(parent.clone());
+        current = parent;
+    }
+    None
+}
+
+fn find_nearest_common_ancestor(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    first: &IUIAutomationElement,
+    second: &IUIAutomationElement,
+) -> Option<IUIAutomationElement> {
+    let mut first_chain = control_view_ancestor_chain(automation, root, first)?;
+    let mut second_chain = control_view_ancestor_chain(automation, root, second)?;
+    first_chain.reverse();
+    second_chain.reverse();
+
+    let mut common = None;
+    for (first_ancestor, second_ancestor) in first_chain.iter().zip(second_chain.iter()) {
+        if !elements_are_equal(automation, first_ancestor, second_ancestor) {
+            break;
+        }
+        common = Some(first_ancestor.clone());
+    }
+    common
+}
+
+fn ancestor_has_class_suffix(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    element: &IUIAutomationElement,
+    suffix: &str,
+) -> bool {
+    control_view_ancestor_chain(automation, root, element).is_some_and(|chain| {
+        chain.into_iter().any(|ancestor| {
+            unsafe { ancestor.CurrentClassName() }
+                .map(|class_name| class_name.to_string().ends_with(suffix))
+                .unwrap_or(false)
+        })
+    })
+}
+
 fn find_by_automation_id_suffix(
     automation: &IUIAutomation,
     root: &IUIAutomationElement,
@@ -1424,8 +1547,25 @@ fn find_property_suffix(
     property_id: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
     suffix: &str,
 ) -> PlatformResult<Option<IUIAutomationElement>> {
-    let values = find_property_suffix_all(automation, root, property_id, suffix)?;
-    Ok(values.into_iter().next())
+    // `FindFirst` stops the provider traversal as soon as the first matching element is found.
+    // This matters for the editor/title anchors because a three-pane web view can contain a large
+    // number of unrelated descendants with the same generic property shape.
+    let substring_value = VARIANT::from(suffix);
+    if let Ok(condition) = unsafe {
+        automation.CreatePropertyConditionEx(
+            property_id,
+            &substring_value,
+            PropertyConditionFlags_MatchSubstring,
+        )
+    } && let Ok(element) = unsafe { root.FindFirst(TreeScope_Descendants, &condition) }
+    {
+        return Ok(Some(element));
+    }
+
+    let exact_value = VARIANT::from(suffix);
+    let exact = unsafe { automation.CreatePropertyCondition(property_id, &exact_value) }
+        .map_err(|error| PlatformError::new("uia-condition-failed", error.to_string()))?;
+    Ok(unsafe { root.FindFirst(TreeScope_Descendants, &exact) }.ok())
 }
 
 fn find_property_suffix_all(
@@ -1515,7 +1655,7 @@ fn find_named_send_button(
 ) -> PlatformResult<Vec<IUIAutomationElement>> {
     let buttons = match find_by_control_type(automation, root, UIA_ButtonControlTypeId.0) {
         Ok(buttons) => buttons,
-        Err(_) => return find_descendants(automation, root, is_named_send_button),
+        Err(_) => return find_named_send_button_by_name(automation, root),
     };
     let matches: Vec<_> = buttons.into_iter().filter(is_named_send_button).collect();
     if !matches.is_empty() {
@@ -1525,13 +1665,25 @@ fn find_named_send_button(
     // Weixin's custom XOutlineButton sometimes exposes only its inner XTextView as the named
     // control. Keep the search anchored to the same toolbar and accept an exact "发送" name in
     // that fallback; the toolbar bounds still constrain the eventual click candidate.
+    find_named_send_button_by_name(automation, root)
+}
+
+fn find_named_send_button_by_name(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+) -> PlatformResult<Vec<IUIAutomationElement>> {
     let named = find_property_suffix_all(automation, root, UIA_NamePropertyId, "发送")?;
-    let candidates = named
+    Ok(named
         .into_iter()
         .filter(|element| read_name(element).as_deref() == Some("发送"))
-        .filter_map(|element| find_button_ancestor(automation, &element))
-        .collect();
-    Ok(candidates)
+        .filter_map(|element| {
+            if is_named_send_button(&element) {
+                Some(element)
+            } else {
+                find_button_ancestor(automation, &element)
+            }
+        })
+        .collect())
 }
 
 fn find_button_ancestor(
@@ -1785,35 +1937,6 @@ fn has_enabled_send_descendant(automation: &IUIAutomation, button: &IUIAutomatio
                 .map(|enabled| enabled.as_bool())
                 .unwrap_or(false)
     })
-}
-
-fn find_descendants(
-    automation: &IUIAutomation,
-    root: &IUIAutomationElement,
-    predicate: impl Fn(&IUIAutomationElement) -> bool,
-) -> PlatformResult<Vec<IUIAutomationElement>> {
-    // SAFETY: both COM proxies are valid for this synchronous query.
-    let condition = unsafe { automation.CreateTrueCondition() }
-        .map_err(|error| PlatformError::new("uia-condition-failed", error.to_string()))?;
-    // SAFETY: root and condition are live COM proxies for the duration of this query.
-    let elements = unsafe { root.FindAll(TreeScope_Descendants, &condition) }
-        .map_err(|error| PlatformError::new("uia-query-failed", error.to_string()))?;
-    // SAFETY: element array is live for the duration of the iteration.
-    let length = unsafe { elements.Length() }
-        .map_err(|error| PlatformError::new("uia-query-failed", error.to_string()))?;
-
-    let mut matches = Vec::new();
-    for index in 0..length {
-        // SAFETY: `index` is bounded by the just-read array length.
-        let element = match unsafe { elements.GetElement(index) } {
-            Ok(element) => element,
-            Err(_) => continue,
-        };
-        if predicate(&element) {
-            matches.push(element);
-        }
-    }
-    Ok(matches)
 }
 
 fn read_name(element: &IUIAutomationElement) -> Option<String> {
@@ -2136,7 +2259,7 @@ mod tests {
                 42,
                 120,
                 220,
-                observed_at + Duration::from_millis(251)
+                observed_at + Duration::from_millis(2_501)
             ),
             SendButtonDiagnostic::SnapshotStale
         );

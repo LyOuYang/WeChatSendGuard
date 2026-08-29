@@ -89,6 +89,35 @@ fn fake_platform_can_exercise_full_confirm_then_recorded_injection_flow() {
 }
 
 #[test]
+fn confirmation_accepts_a_revalidation_completed_after_the_call_timestamp() {
+    let mut context = protected_context("工作群");
+    context.observed_at = Some(fixed_now() + Duration::from_secs(2));
+    let platform = Arc::new(FakeChatContextProvider::new(context));
+    let injector = Arc::new(RecordingInputInjector::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        injector.clone(),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_physical_enter(physical_enter(), fixed_now())
+    else {
+        panic!("protected physical enter should request confirmation");
+    };
+    assert!(matches!(
+        service.complete_confirmation(
+            &pending,
+            ConfirmationOutcome::Confirmed,
+            fixed_now() + Duration::from_secs(1),
+        ),
+        CompletionResult::Injected
+    ));
+    assert_eq!(injector.sent().len(), 1);
+}
+
+#[test]
 fn send_button_click_uses_the_same_confirmation_and_injection_path_as_enter() {
     let context = protected_context("工作群");
     let platform = Arc::new(FakeChatContextProvider::new(context));
@@ -266,7 +295,7 @@ fn unrelated_application_enters_are_not_written_to_the_diagnostic_log() {
 #[test]
 fn stale_production_snapshot_requests_confirmation_then_rejects_stale_revalidation() {
     let mut context = protected_context("工作群");
-    context.observed_at = Some(fixed_now() - Duration::from_millis(251));
+    context.observed_at = Some(fixed_now() - Duration::from_millis(2_501));
     let platform = Arc::new(FakeChatContextProvider::new(context));
     let injector = Arc::new(RecordingInputInjector::default());
     let audit = Arc::new(RecordingAuditLog::default());
@@ -306,7 +335,7 @@ fn stale_production_snapshot_requests_confirmation_then_rejects_stale_revalidati
 #[test]
 fn stale_snapshot_cannot_pass_through_an_old_unprotected_chat() {
     let mut context = protected_context("普通群");
-    context.observed_at = Some(fixed_now() - Duration::from_millis(251));
+    context.observed_at = Some(fixed_now() - Duration::from_millis(2_501));
     let audit = Arc::new(RecordingAuditLog::default());
     let service = GuardService::new(
         protected_button_settings(),

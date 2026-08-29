@@ -95,17 +95,27 @@ impl Controller {
     fn apply_settings(&mut self, settings: AppSettings) -> Result<(), String> {
         let settings = settings.sanitize();
         let retention_changed = self.settings.log_retention_days != settings.log_retention_days;
+        let trusted_path_changed =
+            self.settings.trusted_weixin_executable_path != settings.trusted_weixin_executable_path;
+        let observation_changed = self.settings.enabled != settings.enabled
+            || self.settings.intercept_keyboard_enter != settings.intercept_keyboard_enter
+            || self.settings.intercept_send_button != settings.intercept_send_button;
         self.store
             .save(settings.clone())
             .map_err(|error| format!("无法保存设置：{error}"))?;
 
-        self.provider.configure_observation(
-            settings.enabled,
-            settings.intercept_keyboard_enter,
-            settings.intercept_send_button,
-        );
-        self.provider
-            .set_trusted_weixin_executable_path(settings.trusted_weixin_executable_path.as_deref());
+        if observation_changed {
+            self.provider.configure_observation(
+                settings.enabled,
+                settings.intercept_keyboard_enter,
+                settings.intercept_send_button,
+            );
+        }
+        if trusted_path_changed {
+            self.provider.set_trusted_weixin_executable_path(
+                settings.trusted_weixin_executable_path.as_deref(),
+            );
+        }
         self.service.update_settings(settings.clone());
         self.audit.set_retention_days(settings.log_retention_days);
         if retention_changed {

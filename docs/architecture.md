@@ -2,7 +2,7 @@
 
 ## 版本与范围
 
-`1.1.3` 是 WeChatSendGuard 的当前正式发布版本。当前只实现并交付 Windows 10/11 x64；macOS 和 Linux 没有隐藏的实验实现，也不共享 Windows 二进制、安装器或系统 API。
+`1.2.0` 是 WeChatSendGuard 的当前正式发布版本。当前只实现并交付 Windows 10/11 x64；macOS 和 Linux 没有隐藏的实验实现，也不共享 Windows 二进制、安装器或系统 API。
 
 本项目的目标是在受支持的微信桌面版中，为一次 `Enter` 或点击“发送”按钮的消息发送增加可取消的确认步骤。用户可选择仅保护指定名单，或启用全局防护（白名单）模式。架构把产品规则、界面和操作系统集成拆开：后续平台可以复用规则与界面契约，但必须独立实现自己的受信任进程识别、前台上下文读取和输入控制。
 
@@ -86,7 +86,7 @@ Windows 适配器仅读取公开的 UI Automation 元数据：会话标题、群
 
 ## 配置、数据与版本
 
-设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.1.3`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径，因此无需升级 `schemaVersion`。
+设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.2.0`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径，因此无需升级 `schemaVersion`。
 
 默认路径不会写进 JSON；自定义路径会以如下形式保存：
 

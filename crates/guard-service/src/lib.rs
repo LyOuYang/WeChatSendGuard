@@ -18,7 +18,8 @@ use wechat_send_guard_platform_api::{AuditLog, InputInjector, SendTargetPlatform
 /// for keeping it fresh; this bound prevents a snapshot from authorizing a target after a long
 /// recognition stall while still allowing a short UIA/layout rebuild to be confirmed and
 /// revalidated before injection.
-const MAX_CONTEXT_AGE: Duration = Duration::from_millis(250);
+const MAX_CONTEXT_AGE: Duration = Duration::from_millis(2_500);
+const MAX_CONTEXT_FUTURE_LEAD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalEnter {
@@ -661,8 +662,13 @@ fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
         return false;
     };
 
-    now.duration_since(observed_at)
-        .map_or(true, |age| age > MAX_CONTEXT_AGE)
+    match now.duration_since(observed_at) {
+        Ok(age) => age > MAX_CONTEXT_AGE,
+        // Confirmation captures `now` before the synchronous platform revalidation. A successful
+        // refresh can therefore carry an observation timestamp a few milliseconds later than
+        // `now`; that is fresher, not stale.
+        Err(error) => error.duration() > MAX_CONTEXT_FUTURE_LEAD,
+    }
 }
 
 fn outcome_name(outcome: ConfirmationOutcome) -> &'static str {
