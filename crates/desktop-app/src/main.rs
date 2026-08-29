@@ -1,15 +1,15 @@
 #![cfg_attr(windows, deny(unsafe_op_in_unsafe_fn))]
 #![cfg_attr(windows, windows_subsystem = "windows")]
-//! Production composition root for the Windows application.
+//! Production composition root for the Windows and macOS applications.
 //!
 //! This crate owns lifecycle and UI intent handling. It never makes a Weixin decision itself:
-//! `guard-service` evaluates cached snapshots, and `platform-windows` can inject only after the
-//! service has revalidated the original target.
+//! `guard-service` evaluates cached snapshots, and the active platform adapter can inject only
+//! after the service has revalidated the original target.
 
 mod diagnostics;
 mod update;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use std::{
@@ -32,13 +32,29 @@ use wechat_send_guard_desktop_ui::{
     AppTray, AppWindow, ChatRow, ConfirmationWindow, SlintAboutWindow, UpdatePromptWindow,
 };
 use wechat_send_guard_platform_api::{AuditLog, ChatContextProvider, StartupRegistration};
+#[cfg(target_os = "macos")]
+use wechat_send_guard_platform_macos::{
+    KeyboardKey, MacAuditLog as PlatformAuditLog, MacContextMonitor as PlatformContextMonitor,
+    MacContextProvider as PlatformContextProvider, MacInputInjector as PlatformInputInjector,
+    MacKeyboardHook as PlatformKeyboardHook, MacMouseHook as PlatformMouseHook,
+    MacSendButtonDiagnostic as PlatformSendButtonDiagnostic,
+    MacStartupRegistration as PlatformStartupRegistration, TRUSTED_WECHAT_BUNDLE_ID,
+    activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
+    installed_wechat_version, operating_system_version as macos_operating_system_version,
+    select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
+    show_error_dialog, trusted_wechat_identity,
+};
+#[cfg(windows)]
 use wechat_send_guard_platform_windows::{
-    KeyboardKey, TRUSTED_WEIXIN_PATH, WindowsAuditLog, WindowsContextMonitor,
-    WindowsContextProvider, WindowsInputInjector, WindowsKeyboardHook, WindowsMouseHook,
-    WindowsStartupRegistration, activate_window, center_popup_over_window, cursor_screen_position,
-    default_audit_log_directory, enable_high_dpi_awareness, is_valid_weixin_executable_path,
-    path_matches_trusted_weixin, select_diagnostic_export, select_protected_chat_export,
-    select_protected_chat_import,
+    KeyboardKey, SendButtonDiagnostic as PlatformSendButtonDiagnostic, TRUSTED_WEIXIN_PATH,
+    WindowsAuditLog as PlatformAuditLog, WindowsContextMonitor as PlatformContextMonitor,
+    WindowsContextProvider as PlatformContextProvider,
+    WindowsInputInjector as PlatformInputInjector, WindowsKeyboardHook as PlatformKeyboardHook,
+    WindowsMouseHook as PlatformMouseHook,
+    WindowsStartupRegistration as PlatformStartupRegistration, activate_window,
+    center_popup_over_window, cursor_screen_position, default_audit_log_directory,
+    enable_high_dpi_awareness, is_valid_weixin_executable_path, path_matches_trusted_weixin,
+    select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
 
@@ -86,15 +102,16 @@ struct Controller {
     store: FileSettingsStore,
     settings: AppSettings,
     service: Arc<GuardService>,
-    provider: Arc<WindowsContextProvider>,
-    audit: Arc<WindowsAuditLog>,
-    startup: Option<WindowsStartupRegistration>,
+    provider: Arc<PlatformContextProvider>,
+    audit: Arc<PlatformAuditLog>,
+    startup: Option<PlatformStartupRegistration>,
 }
 
 impl Controller {
     fn apply_settings(&mut self, settings: AppSettings) -> Result<(), String> {
         let settings = settings.sanitize();
         let retention_changed = self.settings.log_retention_days != settings.log_retention_days;
+        #[cfg(windows)]
         let trusted_path_changed =
             self.settings.trusted_weixin_executable_path != settings.trusted_weixin_executable_path;
         let observation_changed = self.settings.enabled != settings.enabled
@@ -111,6 +128,7 @@ impl Controller {
                 settings.intercept_send_button,
             );
         }
+        #[cfg(windows)]
         if trusted_path_changed {
             self.provider.set_trusted_weixin_executable_path(
                 settings.trusted_weixin_executable_path.as_deref(),
@@ -218,25 +236,24 @@ fn run() -> Result<(), Box<dyn Error>> {
     let store = FileSettingsStore::new(settings_path);
     let settings = store.load()?.sanitize();
 
+    #[cfg(windows)]
     let provider = Arc::new(
-        WindowsContextProvider::new_with_trusted_weixin_executable_path(
+        PlatformContextProvider::new_with_trusted_weixin_executable_path(
             settings.trusted_weixin_executable_path.as_deref(),
         ),
     );
+    #[cfg(target_os = "macos")]
+    let provider = Arc::new(PlatformContextProvider::new());
     provider.configure_observation(
         settings.enabled,
         settings.intercept_keyboard_enter,
         settings.intercept_send_button,
     );
-    let audit = Arc::new(WindowsAuditLog::new(
+    let audit = Arc::new(PlatformAuditLog::new(
         default_audit_log_directory(&local_app_data),
         settings.log_retention_days,
     )?);
     let _ = audit.cleanup();
-    let trusted_weixin_executable = settings
-        .trusted_weixin_executable_path
-        .as_deref()
-        .unwrap_or(TRUSTED_WEIXIN_PATH);
     audit.write(
         AuditEntry::new(SystemTime::now(), None, "diagnostics", "environment").with_details([
             ("applicationVersion", APPLICATION_VERSION.to_owned()),
@@ -244,16 +261,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             ("architecture", std::env::consts::ARCH.to_owned()),
             (
                 "weixinVersion",
-                executable_file_version(std::path::Path::new(trusted_weixin_executable))
-                    .unwrap_or_else(|| "未能读取".to_owned()),
+                current_wechat_version(&settings).unwrap_or_else(|| "未能读取".to_owned()),
             ),
             (
-                "trustedWeixinExecutable",
-                diagnostics::redact_windows_path(trusted_weixin_executable),
+                "trustedWeixinIdentity",
+                current_trusted_wechat_identity(&settings),
             ),
         ]),
     );
-    let injector = Arc::new(WindowsInputInjector::with_random_marker());
+    let injector = Arc::new(PlatformInputInjector::with_random_marker());
     let service = Arc::new(GuardService::new(
         settings.clone(),
         provider.clone(),
@@ -266,7 +282,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         service: service.clone(),
         provider: provider.clone(),
         audit: audit.clone(),
-        startup: WindowsStartupRegistration::for_current_executable().ok(),
+        startup: PlatformStartupRegistration::for_current_executable().ok(),
     }));
 
     let main_window = AppWindow::new()?;
@@ -306,13 +322,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         audit.clone(),
     );
 
-    let mut context_monitor = WindowsContextMonitor::new(provider.clone());
+    let mut context_monitor = PlatformContextMonitor::new(provider.clone());
     context_monitor.start()?;
 
-    let mut keyboard_hook = WindowsKeyboardHook::new(injector.marker());
+    let mut keyboard_hook = PlatformKeyboardHook::new(injector.marker());
     let main_window_weak = main_window.as_weak();
     let hook_service = service.clone();
     let keyboard_hook_provider = provider.clone();
+    #[cfg(target_os = "macos")]
+    let keyboard_hook_audit = audit.clone();
     keyboard_hook.set_key_down_handler(Arc::new(move |stroke| {
         if stroke.key == KeyboardKey::Escape {
             let Some(pending) = hook_service.current_pending_confirmation() else {
@@ -338,6 +356,23 @@ fn run() -> Result<(), Box<dyn Error>> {
         // an already-open confirmation can always be cancelled safely.
         if !keyboard_hook_provider.keyboard_enter_observation_enabled() {
             return false;
+        }
+
+        #[cfg(target_os = "macos")]
+        if stroke.context_cache_dirty && !stroke.is_injected && !stroke.shift_pressed {
+            if stroke.is_numpad_enter && !hook_service.settings().intercept_numpad_enter {
+                return false;
+            }
+            keyboard_hook_audit.write(
+                AuditEntry::new(
+                    SystemTime::now(),
+                    None,
+                    "send-blocked",
+                    "context-change-pending-refresh",
+                )
+                .with_details([("source", "enter")]),
+            );
+            return true;
         }
 
         let now = SystemTime::now();
@@ -377,7 +412,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }));
     keyboard_hook.start()?;
 
-    let mut mouse_hook = WindowsMouseHook::new(injector.marker());
+    let mut mouse_hook = PlatformMouseHook::new(injector.marker());
     let mouse_hook_service = service.clone();
     let mouse_hook_provider = provider.clone();
     let mouse_hook_audit = audit.clone();
@@ -387,6 +422,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         // avoids context locks, UIA work, and diagnostics for ordinary clicks.
         if !mouse_hook_provider.send_button_observation_enabled() {
             return false;
+        }
+        #[cfg(target_os = "macos")]
+        if click.context_cache_dirty {
+            mouse_hook_audit.write(
+                AuditEntry::new(
+                    SystemTime::now(),
+                    None,
+                    "send-button-diagnostic",
+                    "context-change-pending-refresh",
+                )
+                .with_details([("source", "send-button")]),
+            );
+            return true;
         }
         let now = SystemTime::now();
         let trace_id = Uuid::new_v4();
@@ -399,8 +447,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
         if matches!(
             diagnosis,
-            wechat_send_guard_platform_windows::SendButtonDiagnostic::UntrustedWindow
-                | wechat_send_guard_platform_windows::SendButtonDiagnostic::SnapshotWindowMismatch
+            PlatformSendButtonDiagnostic::UntrustedWindow
+                | PlatformSendButtonDiagnostic::SnapshotWindowMismatch
         ) {
             return false;
         }
@@ -688,11 +736,17 @@ fn wide_for_message_box(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn show_startup_error(message: &str) {
+    show_error_dialog(message);
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn show_startup_error(message: &str) {
     eprintln!("WeChatSendGuard failed to start: {message}");
 }
 
+#[cfg(windows)]
 fn local_app_data_directory() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = std::env::var_os("LOCALAPPDATA") {
         return Ok(PathBuf::from(path));
@@ -702,6 +756,13 @@ fn local_app_data_directory() -> Result<PathBuf, Box<dyn Error>> {
     Ok(PathBuf::from(user_profile).join("AppData").join("Local"))
 }
 
+#[cfg(target_os = "macos")]
+fn local_app_data_directory() -> Result<PathBuf, Box<dyn Error>> {
+    let user_home = std::env::var_os("HOME").ok_or("HOME is unavailable for the current user")?;
+    Ok(PathBuf::from(user_home).join("Library/Application Support"))
+}
+
+#[cfg(windows)]
 fn launch_installer(installer: &std::path::Path) -> Result<(), String> {
     let mut command = std::process::Command::new(installer);
     command
@@ -710,9 +771,29 @@ fn launch_installer(installer: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn launch_installer(installer: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(installer)
+        .spawn()
+        .map_err(|error| format!("无法打开 macOS 安装映像：{error}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
 fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("无法打开日志目录：{error}"))?;
     std::process::Command::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("无法打开日志目录：{error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("无法打开日志目录：{error}"))?;
+    std::process::Command::new("open")
         .arg(path)
         .spawn()
         .map_err(|error| format!("无法打开日志目录：{error}"))?;
@@ -737,16 +818,12 @@ fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) 
         set_save_status(window, format!("无法准备诊断日志：{error}"), true);
         return;
     }
-    let trusted_path = settings
-        .trusted_weixin_executable_path
-        .as_deref()
-        .unwrap_or(TRUSTED_WEIXIN_PATH);
     let environment = diagnostics::DiagnosticEnvironment {
         application_version: APPLICATION_VERSION,
         operating_system: operating_system_version(),
         architecture: std::env::consts::ARCH,
-        weixin_version: executable_file_version(std::path::Path::new(trusted_path)),
-        trusted_weixin_executable: diagnostics::redact_windows_path(trusted_path),
+        weixin_version: current_wechat_version(&settings),
+        trusted_weixin_identity: current_trusted_wechat_identity(&settings),
         auto_check_updates: settings.auto_check_updates,
         ignored_update_version: settings.ignored_update_version.as_deref(),
     };
@@ -788,9 +865,9 @@ fn operating_system_version() -> String {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn operating_system_version() -> String {
-    std::env::consts::OS.to_owned()
+    macos_operating_system_version()
 }
 
 #[cfg(windows)]
@@ -853,9 +930,56 @@ fn executable_file_version(path: &std::path::Path) -> Option<String> {
     ))
 }
 
-#[cfg(not(windows))]
-fn executable_file_version(_path: &std::path::Path) -> Option<String> {
-    None
+#[cfg(windows)]
+fn current_wechat_version(settings: &AppSettings) -> Option<String> {
+    let trusted_path = settings
+        .trusted_weixin_executable_path
+        .as_deref()
+        .unwrap_or(TRUSTED_WEIXIN_PATH);
+    executable_file_version(std::path::Path::new(trusted_path))
+}
+
+#[cfg(target_os = "macos")]
+fn current_wechat_version(_settings: &AppSettings) -> Option<String> {
+    installed_wechat_version()
+}
+
+#[cfg(windows)]
+fn current_trusted_wechat_identity(settings: &AppSettings) -> String {
+    let trusted_path = settings
+        .trusted_weixin_executable_path
+        .as_deref()
+        .unwrap_or(TRUSTED_WEIXIN_PATH);
+    diagnostics::redact_windows_path(trusted_path)
+}
+
+#[cfg(target_os = "macos")]
+fn current_trusted_wechat_identity(_settings: &AppSettings) -> String {
+    trusted_wechat_identity()
+}
+
+#[cfg(windows)]
+fn default_wechat_identity_value() -> &'static str {
+    TRUSTED_WEIXIN_PATH
+}
+
+#[cfg(target_os = "macos")]
+fn default_wechat_identity_value() -> &'static str {
+    TRUSTED_WECHAT_BUNDLE_ID
+}
+
+#[cfg(windows)]
+fn wechat_identity_value_for_settings(settings: &AppSettings) -> String {
+    settings
+        .trusted_weixin_executable_path
+        .as_deref()
+        .unwrap_or(TRUSTED_WEIXIN_PATH)
+        .to_owned()
+}
+
+#[cfg(target_os = "macos")]
+fn wechat_identity_value_for_settings(_settings: &AppSettings) -> String {
+    trusted_wechat_identity()
 }
 
 fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -1003,7 +1127,7 @@ fn bind_window_callbacks(
         let main_window_weak = main_window_weak.clone();
         move || {
             if let Some(window) = main_window_weak.upgrade() {
-                window.set_weixin_executable_path(TRUSTED_WEIXIN_PATH.into());
+                window.set_weixin_executable_path(default_wechat_identity_value().into());
                 mark_unsaved(&main_window_weak);
             }
         }
@@ -1357,7 +1481,7 @@ fn bind_tray_callbacks(
 fn show_and_restore_main_window(window: &AppWindow) {
     window.window().set_minimized(false);
     let _ = window.show();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(window_handle) = native_window_handle(window.window()) {
         activate_window(window_handle);
     }
@@ -1504,7 +1628,7 @@ fn install_status_refresh(
     main_window: &AppWindow,
     tray: &AppTray,
     controller: Rc<RefCell<Controller>>,
-    provider: Arc<WindowsContextProvider>,
+    provider: Arc<PlatformContextProvider>,
 ) -> Timer {
     let main_window_weak = main_window.as_weak();
     let tray_weak = tray.as_weak();
@@ -1529,7 +1653,7 @@ fn install_background_timers(
     main_window: &AppWindow,
     controller: Rc<RefCell<Controller>>,
     update_state: UpdateStateSlot,
-    audit: Arc<WindowsAuditLog>,
+    audit: Arc<PlatformAuditLog>,
 ) -> BackgroundTimers {
     let main_window_weak = main_window.as_weak();
     let initial_update_check = Timer::default();
@@ -1705,6 +1829,7 @@ fn mark_unsaved(main_window: &slint::Weak<AppWindow>) {
 }
 
 fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id: Option<&str>) {
+    configure_platform_ui(window);
     window.set_application_version(APPLICATION_VERSION.into());
     window.set_protection_enabled(settings.enabled);
     window.set_rule_mode(rule_mode_to_ui(settings.rule_mode));
@@ -1719,13 +1844,7 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
     window.set_start_with_windows(settings.start_with_windows);
     window.set_auto_check_updates(settings.auto_check_updates);
     window.set_log_retention_days(settings.log_retention_days.to_string().into());
-    window.set_weixin_executable_path(
-        settings
-            .trusted_weixin_executable_path
-            .as_deref()
-            .unwrap_or(TRUSTED_WEIXIN_PATH)
-            .into(),
-    );
+    window.set_weixin_executable_path(wechat_identity_value_for_settings(settings).into());
     window.set_has_unsaved_settings(false);
     if let Ok(local_app_data) = local_app_data_directory() {
         window.set_log_directory(
@@ -1736,6 +1855,38 @@ fn render_settings(window: &AppWindow, settings: &AppSettings, selected_chat_id:
         );
     }
     render_chat_list(window, settings, selected_chat_id);
+}
+
+#[cfg(windows)]
+fn configure_platform_ui(window: &AppWindow) {
+    window.set_ui_font_family("Microsoft YaHei".into());
+    window.set_platform_name("Windows".into());
+    window.set_application_data_description(
+        "所有设置保存在当前 Windows 用户目录，不需要管理员权限。".into(),
+    );
+    window.set_client_identity_editable(true);
+    window.set_client_identity_placeholder(TRUSTED_WEIXIN_PATH.into());
+    window.set_client_identity_help(
+        "默认路径已自动填入；客户端版本或 UI Automation 控件不兼容时，应用不会注入按键。".into(),
+    );
+    window.set_startup_label("随 Windows 启动".into());
+    window.set_startup_note("使用当前用户的启动项；不会请求管理员权限。".into());
+}
+
+#[cfg(target_os = "macos")]
+fn configure_platform_ui(window: &AppWindow) {
+    window.set_ui_font_family("PingFang SC".into());
+    window.set_platform_name("macOS".into());
+    window.set_application_data_description(
+        "所有设置保存在当前 macOS 用户目录，不需要管理员权限。".into(),
+    );
+    window.set_client_identity_editable(false);
+    window.set_client_identity_placeholder(TRUSTED_WECHAT_BUNDLE_ID.into());
+    window.set_client_identity_help(
+        "固定校验微信签名 Bundle ID 与 Team ID；Accessibility 或控件不兼容时不会注入按键。".into(),
+    );
+    window.set_startup_label("登录 macOS 时启动".into());
+    window.set_startup_note("使用当前用户 LaunchAgent；不会请求管理员权限。".into());
 }
 
 fn render_chat_list(window: &AppWindow, settings: &AppSettings, selected_chat_id: Option<&str>) {
@@ -1825,8 +1976,11 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
     settings.auto_check_updates = window.get_auto_check_updates();
     settings.log_retention_days =
         parse_bounded_u32(&window.get_log_retention_days(), 1, 30, "日志保留天数")?;
-    settings.trusted_weixin_executable_path =
-        weixin_executable_path_override_from_form(&window.get_weixin_executable_path())?;
+    #[cfg(windows)]
+    {
+        settings.trusted_weixin_executable_path =
+            weixin_executable_path_override_from_form(&window.get_weixin_executable_path())?;
+    }
     update_selected_aliases(
         &mut settings,
         &window.get_selected_chat_id(),
@@ -2142,7 +2296,7 @@ fn schedule_confirmation_focus(confirmation: &ConfirmationWindow) {
         let Some(confirmation) = confirmation_weak.upgrade() else {
             return;
         };
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(window_handle) = native_window_handle(confirmation.window()) {
             activate_window(window_handle);
         }
@@ -2150,11 +2304,14 @@ fn schedule_confirmation_focus(confirmation: &ConfirmationWindow) {
     });
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn native_window_handle(window: &slint::Window) -> Option<isize> {
     let handle = window.window_handle();
     match handle.window_handle().ok()?.as_raw() {
+        #[cfg(windows)]
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(handle) => Some(handle.ns_view.as_ptr() as isize),
         _ => None,
     }
 }
@@ -2316,6 +2473,7 @@ fn update_selected_aliases(settings: &mut AppSettings, selected_id: &str, aliase
     }
 }
 
+#[cfg(windows)]
 fn weixin_executable_path_override_from_form(value: &str) -> Result<Option<String>, String> {
     let value = value.trim().trim_matches('"').trim();
     if value.is_empty() {
@@ -2442,9 +2600,11 @@ const fn unknown_behavior_from_ui(behavior: i32) -> Option<UnknownContextBehavio
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::weixin_executable_path_override_from_form;
     use super::{
         is_background_start_argument, parse_bounded_u32, status_for_context,
-        weixin_executable_path_override_from_form, window_position_for_cursor_drag,
+        window_position_for_cursor_drag,
     };
     use slint::PhysicalPosition;
     use wechat_send_guard_core::{AppSettings, ChatContext};
@@ -2456,6 +2616,7 @@ mod tests {
         assert!(parse_bounded_u32("eight", 500, 3_000, "长按时长").is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn weixin_executable_path_uses_default_only_when_it_matches_the_supported_path() {
         assert_eq!(

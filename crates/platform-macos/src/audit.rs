@@ -13,7 +13,8 @@ use std::{
 };
 use wechat_send_guard_core::AuditEntry;
 use wechat_send_guard_platform_api::AuditLog;
-use windows::Win32::System::SystemInformation::GetLocalTime;
+
+use crate::ffi;
 
 const MAX_QUEUED_AUDIT_ENTRIES: usize = 256;
 const MIN_RETENTION_DAYS: u32 = 1;
@@ -28,20 +29,17 @@ enum AuditCommand {
     Cleanup(SyncSender<io::Result<()>>),
 }
 
-/// Best-effort asynchronous JSON Lines writer. It stores only opaque chat IDs and an
-/// allow-listed, content-free diagnostic vocabulary; it never writes a draft or chat title.
-pub struct WindowsAuditLog {
+pub struct MacAuditLog {
     sender: Mutex<Option<SyncSender<AuditCommand>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     retention_days: Arc<AtomicU32>,
     log_directory: PathBuf,
 }
 
-impl WindowsAuditLog {
+impl MacAuditLog {
     pub fn new(log_directory: impl Into<PathBuf>, retention_days: u32) -> io::Result<Self> {
         let log_directory = log_directory.into();
         fs::create_dir_all(&log_directory)?;
-
         let retention_days = Arc::new(AtomicU32::new(clamp_retention(retention_days)));
         enforce_retention_and_capacity(
             &log_directory,
@@ -56,7 +54,6 @@ impl WindowsAuditLog {
                 let log_directory = log_directory.clone();
                 move || worker_loop(receiver, &log_directory, worker_retention)
             })?;
-
         Ok(Self {
             sender: Mutex::new(Some(sender)),
             worker: Mutex::new(Some(worker)),
@@ -86,12 +83,9 @@ impl WindowsAuditLog {
         self.request(AuditCommand::Cleanup)
     }
 
-    /// Stops the worker after already-queued entries are handled. This is intended for normal
-    /// desktop-app shutdown; a full queue never blocks a low-level callback on disk I/O.
     pub fn shutdown(&self) {
         let sender = lock_unpoisoned(&self.sender).take();
         drop(sender);
-
         if let Some(worker) = lock_unpoisoned(&self.worker).take() {
             let _ = worker.join();
         }
@@ -118,24 +112,22 @@ impl WindowsAuditLog {
     }
 }
 
-impl AuditLog for WindowsAuditLog {
+impl AuditLog for MacAuditLog {
     fn write(&self, entry: AuditEntry) {
-        let sender = lock_unpoisoned(&self.sender);
-        if let Some(sender) = sender.as_ref() {
-            // Diagnostic writes must never delay a low-level physical input callback.
+        if let Some(sender) = lock_unpoisoned(&self.sender).as_ref() {
             let _ = sender.try_send(AuditCommand::Entry(entry));
         }
     }
 }
 
-impl Drop for WindowsAuditLog {
+impl Drop for MacAuditLog {
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
-pub fn default_audit_log_directory(local_app_data: &Path) -> PathBuf {
-    local_app_data.join("WeChatSendGuard").join("logs")
+pub fn default_audit_log_directory(application_support: &Path) -> PathBuf {
+    application_support.join("WeChatSendGuard").join("logs")
 }
 
 fn worker_loop(
@@ -211,7 +203,6 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "operatingSystem"
             | "architecture"
             | "weixinVersion"
-            | "trustedWeixinExecutable"
             | "trustedWeixinIdentity"
             | "releaseVersion"
             | "checkMode"
@@ -231,9 +222,12 @@ fn next_audit_log_path(log_directory: &Path) -> io::Result<PathBuf> {
 }
 
 fn local_date_stamp() -> (u16, u16, u16) {
-    // SAFETY: GetLocalTime fills and returns a plain SYSTEMTIME value with no borrowed state.
-    let now = unsafe { GetLocalTime() };
-    (now.wYear, now.wMonth, now.wDay)
+    let mut year = 1970;
+    let mut month = 1;
+    let mut day = 1;
+    // SAFETY: all three out pointers are valid stack values and the bridge retains none of them.
+    let _ = unsafe { ffi::WSGMacCopyLocalDate(&mut year, &mut month, &mut day) };
+    (year, month, day)
 }
 
 fn audit_file_name((year, month, day): (u16, u16, u16), sequence: u32) -> String {
@@ -263,7 +257,6 @@ fn enforce_retention_and_capacity(
             let _ = fs::remove_file(file);
         }
     }
-
     files = audit_log_files(log_directory)?;
     files.sort_by_key(|path| (file_modified(path), path.clone()));
     let mut total_bytes = files
@@ -300,43 +293,26 @@ fn audit_log_files(log_directory: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(fs::read_dir(log_directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| is_audit_log(path))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("audit-") && name.ends_with(".jsonl"))
+        })
         .collect())
 }
 
 fn file_modified(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok()?.modified().ok()
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 fn is_active_path(path: &Path, active_path: Option<&Path>) -> bool {
     active_path.is_some_and(|active| active == path)
 }
 
-fn is_audit_log(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let Some(stem) = name
-        .strip_prefix("audit-")
-        .and_then(|value| value.strip_suffix(".jsonl"))
-    else {
-        return false;
-    };
-    let parts = stem.split('-').collect::<Vec<_>>();
-    let [year, month, day, ..] = parts.as_slice() else {
-        return false;
-    };
-    matches!(parts.len(), 3 | 4)
-        && year.len() == 4
-        && month.len() == 2
-        && day.len() == 2
-        && parts
-            .iter()
-            .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
-}
-
-fn clamp_retention(retention_days: u32) -> u32 {
-    retention_days.clamp(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS)
+fn clamp_retention(days: u32) -> u32 {
+    days.clamp(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS)
 }
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -347,78 +323,24 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        time::{Duration, UNIX_EPOCH},
-    };
-
-    use super::{
-        WindowsAuditLog, audit_file_name, audit_log_files, clamp_retention, is_audit_log,
-        serialize_entry,
-    };
-    use uuid::Uuid;
-    use wechat_send_guard_core::AuditEntry;
-    use wechat_send_guard_platform_api::AuditLog;
+    use super::{audit_file_name, is_safe_detail};
 
     #[test]
-    fn audit_serialization_keeps_only_allow_listed_content_free_details() {
-        let mut entry = AuditEntry::new(
-            UNIX_EPOCH + Duration::from_millis(42),
-            None,
-            "send",
-            "injected",
-        )
-        .with_trace_id(Uuid::nil());
-        entry.details = BTreeMap::from([
-            ("source".to_owned(), "enter".to_owned()),
-            ("chatTitle".to_owned(), "绝不写入".to_owned()),
-        ]);
-        let serialized = serialize_entry(&entry);
-
-        assert!(serialized.contains("timestampUnixMilliseconds"));
-        assert!(serialized.contains("traceId"));
-        assert!(serialized.contains("source"));
-        assert!(!serialized.contains("chatTitle"));
-        assert!(!serialized.contains("draft"));
-    }
-
-    #[test]
-    fn retention_and_file_filters_are_bounded_and_narrow() {
-        assert_eq!(clamp_retention(0), 1);
-        assert_eq!(clamp_retention(99), 30);
-        assert!(is_audit_log(std::path::Path::new("audit-2026-08-27.jsonl")));
-        assert!(is_audit_log(std::path::Path::new(
-            "audit-2026-08-27-01.jsonl"
-        )));
-        assert!(!is_audit_log(std::path::Path::new("settings.json")));
-        assert_eq!(audit_file_name((2026, 8, 27), 0), "audit-2026-08-27.jsonl");
-    }
-
-    #[test]
-    fn queued_audit_entries_flush_and_clear_in_order() {
-        let directory =
-            std::env::temp_dir().join(format!("WeChatSendGuard-audit-test-{}", Uuid::new_v4()));
-        let log = WindowsAuditLog::new(&directory, 7).expect("audit log should start");
-        log.write(AuditEntry::new(
-            UNIX_EPOCH + Duration::from_secs(1),
-            None,
-            "send",
-            "injected",
-        ));
-        log.flush().expect("flush should wait for queued writes");
+    fn audit_names_match_the_cross_platform_rotation_contract() {
+        assert_eq!(audit_file_name((2026, 8, 29), 0), "audit-2026-08-29.jsonl");
         assert_eq!(
-            audit_log_files(&directory)
-                .expect("audit directory should be readable")
-                .len(),
-            1
+            audit_file_name((2026, 8, 29), 2),
+            "audit-2026-08-29-02.jsonl"
         );
-        log.clear().expect("clear should run after queued writes");
-        assert!(
-            audit_log_files(&directory)
-                .expect("audit directory should be readable")
-                .is_empty()
-        );
-        log.shutdown();
-        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn audit_allowlist_rejects_content_bearing_fields() {
+        assert!(is_safe_detail(
+            "trustedWeixinIdentity",
+            "com.tencent.xinWeChat"
+        ));
+        assert!(!is_safe_detail("chatTitle", "private name"));
+        assert!(!is_safe_detail("source", "line one\nline two"));
     }
 }

@@ -93,7 +93,7 @@ pub fn download_and_verify(
     fs::create_dir_all(temporary_directory)
         .map_err(|error| format!("无法创建更新临时目录：{error}"))?;
     let destination = temporary_directory.join(&release.installer.name);
-    let partial = destination.with_extension("exe.part");
+    let partial = destination.with_extension("part");
     let client = client()?;
 
     let checksum_response = client
@@ -176,7 +176,7 @@ fn parse_release(release: GitHubRelease) -> Result<Release, String> {
         return Err("检查更新失败：最新发布不是正式版本。".to_owned());
     }
     let version = parse_version(&release.tag_name)?;
-    let installer_name = format!("WeChatSendGuard-Setup-{version}.exe");
+    let installer_name = installer_asset_name(&version);
     let checksum_name = format!("{installer_name}.sha256");
     let installer = find_asset(&release.assets, &installer_name)?;
     let checksum = find_asset(&release.assets, &checksum_name)?;
@@ -193,6 +193,16 @@ fn parse_release(release: GitHubRelease) -> Result<Release, String> {
         installer,
         checksum,
     })
+}
+
+#[cfg(windows)]
+fn installer_asset_name(version: &Version) -> String {
+    format!("WeChatSendGuard-Setup-{version}.exe")
+}
+
+#[cfg(target_os = "macos")]
+fn installer_asset_name(version: &Version) -> String {
+    format!("WeChatSendGuard-{version}-universal.dmg")
 }
 
 fn find_asset(assets: &[GitHubAsset], name: &str) -> Result<ReleaseAsset, String> {
@@ -249,7 +259,8 @@ fn network_error(error: reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        GitHubAsset, GitHubRelease, checksum_for_asset, is_sha256, parse_release, parse_version,
+        GitHubAsset, GitHubRelease, checksum_for_asset, installer_asset_name, is_sha256,
+        parse_release, parse_version,
     };
 
     #[test]
@@ -257,6 +268,21 @@ mod tests {
         assert!(parse_version("v1.2.3").is_ok());
         assert!(parse_version("1.2.3").is_ok());
         assert!(parse_version("latest").is_err());
+    }
+
+    #[test]
+    fn installer_asset_matches_the_active_platform() {
+        let version = parse_version("1.2.3").unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            installer_asset_name(&version),
+            "WeChatSendGuard-Setup-1.2.3.exe"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            installer_asset_name(&version),
+            "WeChatSendGuard-1.2.3-universal.dmg"
+        );
     }
 
     #[test]
@@ -277,6 +303,9 @@ mod tests {
 
     #[test]
     fn release_parser_requires_named_https_assets() {
+        let version = parse_version("v1.2.3").unwrap();
+        let installer_name = installer_asset_name(&version);
+        let checksum_name = format!("{installer_name}.sha256");
         let release = GitHubRelease {
             tag_name: "v1.2.3".into(),
             name: "WeChatSendGuard 1.2.3".into(),
@@ -286,12 +315,12 @@ mod tests {
             prerelease: false,
             assets: vec![
                 GitHubAsset {
-                    name: "WeChatSendGuard-Setup-1.2.3.exe".into(),
-                    browser_download_url: "https://example.invalid/installer.exe".into(),
+                    name: installer_name,
+                    browser_download_url: "https://example.invalid/installer".into(),
                 },
                 GitHubAsset {
-                    name: "WeChatSendGuard-Setup-1.2.3.exe.sha256".into(),
-                    browser_download_url: "https://example.invalid/installer.exe.sha256".into(),
+                    name: checksum_name,
+                    browser_download_url: "https://example.invalid/installer.sha256".into(),
                 },
             ],
         };

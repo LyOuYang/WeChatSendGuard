@@ -1,11 +1,12 @@
 [package]
-name = "wechat-send-guard-platform-windows"
+name = "wechat-send-guard-platform-macos"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Windows-specific platform adapter for WeChatSendGuard."
+description = "macOS-specific platform adapter for WeChatSendGuard."
+build = "build.rs"
 
 [dependencies]
 serde_json.workspace = true
@@ -13,5 +14,5 @@ uuid.workspace = true
 wechat-send-guard-core = { path = "../guard-core" }
 wechat-send-guard-platform-api = { path = "../platform-api" }
 
-[target.'cfg(windows)'.dependencies]
-windows.workspace = true
+[build-dependencies]
+cc = "1.4.4"

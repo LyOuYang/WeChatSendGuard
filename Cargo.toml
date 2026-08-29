@@ -4,6 +4,7 @@ members = [
     "crates/guard-service",
     "crates/platform-api",
     "crates/platform-windows",
+    "crates/platform-macos",
     "crates/desktop-ui",
     "crates/desktop-app",
 ]
@@ -12,6 +13,7 @@ default-members = [
     "crates/guard-service",
     "crates/platform-api",
     "crates/platform-windows",
+    "crates/platform-macos",
     "crates/desktop-ui",
     "crates/desktop-app",
 ]

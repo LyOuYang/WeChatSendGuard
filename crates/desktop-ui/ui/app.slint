@@ -121,23 +121,25 @@ component InputField inherits Rectangle {
     in-out property <string> value;
     in property <string> placeholder;
     in property <bool> valid: true;
+    in property <bool> active: true;
     callback edited();
 
     height: 34px;
     border-radius: 7px;
     border-width: root.valid ? (input.has-focus ? 1.5px : 1px) : 1.5px;
     border-color: root.valid ? (input.has-focus ? #07c160 : #e2e8f0) : #dc2626;
-    background: #ffffff;
+    background: root.active ? #ffffff : #f8fafc;
     clip: true;
     animate border-color { duration: 120ms; easing: ease-out; }
 
     input := TextInput {
+        enabled: root.active;
         x: 10px;
         y: 0px;
         width: parent.width - 20px;
         height: parent.height;
         text <=> root.value;
-        color: #0f172a;
+        color: root.active ? #0f172a : #64748b;
         font-size: 13px;
         vertical-alignment: center;
         edited => { root.edited(); }
@@ -408,7 +410,7 @@ export component AppWindow inherits Window {
     no-frame: true;
     resize-border-width: 8px;
     background: #ffffff;
-    default-font-family: "Microsoft YaHei";
+    default-font-family: root.ui-font-family;
     default-font-size: 13px;
     default-font-weight: 400;
 
@@ -445,6 +447,14 @@ export component AppWindow inherits Window {
     in-out property <bool> has-unsaved-settings: false;
     in-out property <string> save-status: "设置已就绪";
     in-out property <bool> save-status-error: false;
+    in property <string> ui-font-family: "Microsoft YaHei";
+    in property <string> platform-name: "Windows";
+    in property <string> application-data-description: "所有设置保存在当前 Windows 用户目录，不需要管理员权限。";
+    in property <bool> client-identity-editable: true;
+    in property <string> client-identity-placeholder: "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe";
+    in property <string> client-identity-help: "默认路径已自动填入；客户端版本或 UI Automation 控件不兼容时，应用不会注入按键。";
+    in property <string> startup-label: "随 Windows 启动";
+    in property <string> startup-note: "使用当前用户的启动项；不会请求管理员权限。";
 
     callback page-selected(int);
     callback protection-toggled(bool);
@@ -901,7 +911,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         spacing: 10px;
                         Text { height: 26px; text: "通用设置"; color: #0f172a; font-size: 20px; font-weight: 700; }
-                        Text { height: 20px; text: "所有设置保存在当前 Windows 用户目录，不需要管理员权限。"; color: #64748b; font-size: 12px; }
+                        Text { height: 20px; text: root.application-data-description; color: #64748b; font-size: 12px; }
                         Rectangle {
                             height: 156px;
                             vertical-stretch: 0;
@@ -917,18 +927,20 @@ export component AppWindow inherits Window {
                                     InputField {
                                         horizontal-stretch: 1;
                                         value <=> root.weixin-executable-path;
-                                        placeholder: "C:\\Program Files\\Tencent\\Weixin\\Weixin.exe";
+                                        placeholder: root.client-identity-placeholder;
+                                        active: root.client-identity-editable;
                                         edited => { root.settings-dirty(); }
                                     }
                                     AppButton {
                                         width: 88px;
                                         label: "恢复默认";
+                                        visible: root.client-identity-editable;
                                         clicked => { root.reset-weixin-executable-path(); }
                                     }
                                 }
                                 Text {
                                     height: 18px;
-                                    text: "默认路径已自动填入；客户端版本或 UI Automation 控件不兼容时，应用不会注入按键。";
+                                    text: root.client-identity-help;
                                     color: #64748b;
                                     font-size: 11px;
                                     overflow: elide;
@@ -951,8 +963,8 @@ export component AppWindow inherits Window {
                                 padding: 16px;
                                 spacing: 8px;
                                 ToggleLine {
-                                    label: "随 Windows 启动";
-                                    note: "使用当前用户的启动项；不会请求管理员权限。";
+                                    label: root.startup-label;
+                                    note: root.startup-note;
                                     checked: root.start-with-windows;
                                     toggled(value) => { root.start-with-windows = value; root.startup-toggled(value); }
                                 }
