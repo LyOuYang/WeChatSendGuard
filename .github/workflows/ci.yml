@@ -19,30 +19,9 @@ env:
   RUST_TOOLCHAIN: 1.92.0
 
 jobs:
-  quality:
-    name: Rust quality checks
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
-      - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Run lints
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Run automated tests
-        run: cargo test --workspace
-
   windows:
     name: Windows package
     runs-on: windows-2022
-    needs: quality
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -53,6 +32,12 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
+      - name: Check formatting, lint, and tests
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
       - name: Install NSIS
         shell: pwsh
         run: choco install nsis --yes --no-progress --limit-output
@@ -72,7 +57,6 @@ jobs:
   macos:
     name: macOS universal package
     runs-on: macos-14
-    needs: quality
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -83,6 +67,11 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
+      - name: Check formatting, lint, and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
       - name: Build macOS universal DMG
         env:
           MACOS_BUILD_KIND: universal
