@@ -10,7 +10,7 @@
 - 仅当目标会话、窗口和输入框状态仍然一致时，才会继续发送；
 - 发送保护全程本地运行，不上传消息，不保存消息正文。
 
-当前正式版本为 `1.2.0`，只发布 Windows 10/11 x64 安装包。项目已采用 Rust + Slint 原生实现，终端用户不需要安装 .NET、Java、浏览器运行时或其他额外运行时。
+当前正式版本为 `1.2.0`，发布产物仍为 Windows 10/11 x64 安装包。开发分支已加入 macOS universal 候选实现；完成签名、公证和人工兼容清单前不视为正式支持。项目采用 Rust + Slint 原生实现，终端用户不需要安装 .NET、Java、浏览器运行时或其他额外运行时。
 
 ## Windows 用户说明
 
@@ -67,7 +67,7 @@ Windows 是 `1.2.0` 的唯一交付平台，但以下内容是后续 macOS、Lin
 - [界面契约](docs/ui-parity.md)：Slint 视图的视觉与交互基线。
 - [测试策略](docs/testing-policy.md)：自动化测试与真实微信人工验证的严格边界。
 - [人工微信验证清单](docs/manual-wechat-validation.md)：发布负责人使用的非自动化验证步骤。
-- [安全与隐私边界](docs/security.md) 与 [Windows 发布流程](docs/release.md)。
+- [安全与隐私边界](docs/security.md)、[macOS 适配说明](docs/macos-adaptation.md) 与 [发布流程](docs/release.md)。
 
 ## Windows 开发与发布
 

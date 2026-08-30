@@ -15,7 +15,7 @@ pub struct DiagnosticEnvironment<'a> {
     pub operating_system: String,
     pub architecture: &'a str,
     pub weixin_version: Option<String>,
-    pub trusted_weixin_executable: String,
+    pub trusted_weixin_identity: String,
     pub auto_check_updates: bool,
     pub ignored_update_version: Option<&'a str>,
 }
@@ -68,6 +68,7 @@ pub fn write_diagnostic_archive(
     Ok(())
 }
 
+#[cfg(windows)]
 pub fn redact_windows_path(path: &str) -> String {
     let normalized = path.replace('/', "\\");
     let parts = normalized
@@ -116,8 +117,11 @@ fn zip_error(error: zip::result::ZipError) -> String {
 mod tests {
     use std::{fs, io::Read};
 
-    use super::{DiagnosticEnvironment, redact_windows_path, write_diagnostic_archive};
+    #[cfg(windows)]
+    use super::redact_windows_path;
+    use super::{DiagnosticEnvironment, write_diagnostic_archive};
 
+    #[cfg(windows)]
     #[test]
     fn diagnostic_path_redaction_hides_the_current_user_directory() {
         assert_eq!(
@@ -146,7 +150,7 @@ mod tests {
             operating_system: "Windows 11".into(),
             architecture: "x86_64",
             weixin_version: Some("4.0.0.1".into()),
-            trusted_weixin_executable: r"C:\…\Weixin.exe".into(),
+            trusted_weixin_identity: r"C:\…\Weixin.exe".into(),
             auto_check_updates: true,
             ignored_update_version: None,
         };

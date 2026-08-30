@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Native Windows desktop application for WeChatSendGuard."
+description = "Native Windows and macOS desktop application for WeChatSendGuard."
 
 [[bin]]
 name = "WeChatSendGuard"
@@ -20,13 +20,18 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
-windows.workspace = true
 zip.workspace = true
 wechat-send-guard-core = { path = "../guard-core" }
 wechat-send-guard-desktop-ui = { path = "../desktop-ui" }
 wechat-send-guard-platform-api = { path = "../platform-api" }
-wechat-send-guard-platform-windows = { path = "../platform-windows" }
 wechat-send-guard-service = { path = "../guard-service" }
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+wechat-send-guard-platform-windows = { path = "../platform-windows" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wechat-send-guard-platform-macos = { path = "../platform-macos" }
 
 [build-dependencies]
 winresource = "0.1"
