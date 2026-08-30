@@ -29,10 +29,10 @@
 
 ### 通用设置
 
-- “微信客户端与未知会话”区域始终自动展示默认路径 `C:\Program Files\Tencent\Weixin\Weixin.exe`。
+- Windows 的“微信客户端与未知会话”区域展示并允许编辑默认路径 `C:\Program Files\Tencent\Weixin\Weixin.exe`；macOS 同一位置只读展示固定签名 bundle 与 Team ID。
 - 用户可编辑为其他绝对 `Weixin.exe` 路径，并可点击“恢复默认”；保存前不改变当前信任规则，保存成功后立即重新观察前台上下文。
 - 客户端路径或 UI Automation 控件不兼容时显示正常不可用状态，应用不会注入按键。
-- 可设置未知会话为“要求确认”或“阻止发送”，并配置当前用户启动项。
+- 可设置未知会话为“要求确认”或“阻止发送”，并配置当前用户启动项（Windows Run 项或 macOS LaunchAgent）。
 - “日志与诊断”显示日志目录，可设置 1–30 天保留期、打开目录、导出不含消息内容的诊断包或清空日志。
 - 托盘菜单显示当前守护状态以及正确的下一步操作“暂停发送守护”或“启用发送守护”。
 
@@ -61,4 +61,4 @@
 | 浅绿色状态面 | `#E8F8F0` |
 | 提醒 / 错误 | `#D97706` / `#DC2626` |
 
-字体顺序为 `Segoe UI`、`Microsoft YaHei UI`、`PingFang SC`、系统无衬线字体。卡片圆角 8 px，普通控件圆角 6 px。所有文本应在 100% 和 150% Windows 缩放下保持完整可读；截图审核使用固定演示数据，不能显示真实聊天标题或草稿。
+Windows 使用 `Microsoft YaHei UI`/`Segoe UI`，macOS 使用 `PingFang SC`，并回退到系统无衬线字体。卡片圆角 8 px，普通控件圆角 6 px。所有文本应在 Windows 100%/150% 缩放及 macOS Retina/非 Retina 显示下保持完整可读；截图审核使用固定演示数据，不能显示真实聊天标题或草稿。

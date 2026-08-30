@@ -3,7 +3,7 @@
 ## 前置条件
 
 - 使用专用测试账号和没有无关收件人的私有测试群或收藏/文件传输目标。
-- 记录 Windows 版本、微信版本、应用版本、安装包 SHA-256、测试日期和测试人。
+- 记录目标平台版本、微信版本、应用版本、安装包 SHA-256、测试日期和测试人；macOS 还需记录 CPU 架构、bundle/Team 签名身份与公证结果。
 - 安装候选包后从全新应用启动开始验证。
 - 验证期间不运行任何可能操作真实微信的自动化工具。
 
@@ -42,6 +42,21 @@
 5. 让微信以更高权限运行而守护不提升，验证失败关闭并能表达无法保护的状态。
 6. 卸载后安装升级候选包，验证 `%LocalAppData%\WeChatSendGuard` 设置和日志仍在，除非用户明确删除。
 
+## macOS 平台追加清单
+
+以下项目与上面的公共发送保护步骤一起执行，不能用 Windows 结果代替：
+
+1. 使用已签名 `.app` 首次启动，分别验证“辅助功能”和“输入监控”未授权、授权、撤销及重新授权；任何未授权状态都不得补发输入。
+2. 用 `codesign -d --verbose=4` 记录候选应用和官方微信的 bundle、Team ID、Hardened Runtime；验证同名但签名不匹配的测试应用不会被信任。
+3. 验证通用设置只读显示 `com.tencent.xinWeChat` 与 Team `5A4RE8SF68`，不会读取或保存 Windows 可执行路径作为 macOS 信任规则。
+4. 手工加入一个联系人和一个群聊，确认 Accessibility 标题及类型分类稳定；成员数量变化后标题仍能匹配。若任一类型被误判或不可识别，本候选不能声明功能一致。
+5. 分别用主键盘 Return、数字键盘 Enter、发送按钮和 Esc 完成公共发送保护清单；检查补发事件只产生一条消息，且不会再次触发自身 event tap。
+6. 在微信单窗口、多窗口、窗口移动/缩放、不同显示器和会话快速切换下重复测试；识别更新期间允许安全阻止，不允许原始发送漏过。
+7. 启用“登录 macOS 时启动”，检查当前用户 LaunchAgent 内容、下次登录后台启动和状态栏恢复；关闭后确认 LaunchAgent 被移除，不请求管理员权限。
+8. 检查 `~/Library/Application Support/WeChatSendGuard` 的设置和日志边界，验证 Finder 打开目录、JSON 导入导出、诊断 ZIP、清空日志和保留清理。
+9. 从 universal DMG 安装并运行 Apple Silicon 与 Intel（或 Rosetta/Intel 测试机）候选，记录 `lipo -info`、`codesign --verify --deep --strict`、`spctl` 和 stapler 验证结果。
+10. 在“关于”页验证 macOS 更新只选择 `WeChatSendGuard-<VERSION>-universal.dmg` 及同名 `.sha256`，校验失败不打开 DMG。
+
 ## 签核
 
-将完成的清单和所有失败或跳过项归档到发布记录。任一失败或跳过项都不能用于声明该版本的微信兼容性。
+将完成的清单和所有失败或跳过项按平台归档到发布记录。任一失败或跳过项都不能用于声明该平台版本的微信兼容性或 Windows/macOS 功能一致。

@@ -8,6 +8,7 @@ TestResults/
 .vscode/
 *.user
 *.suo
+.DS_Store
 
 # Local publish artifacts
 publish/

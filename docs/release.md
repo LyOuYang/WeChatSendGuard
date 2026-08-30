@@ -1,4 +1,4 @@
-# Windows 发布流程
+# Windows 与 macOS 发布流程
 
 ## 版本规则
 
@@ -49,6 +49,18 @@ git push origin v<VERSION>
 
 安装器仅将 Windows 应用安装到 `%LocalAppData%\Programs\WeChatSendGuard`，创建开始菜单组和已注册卸载项。正常卸载不删除 `%LocalAppData%\WeChatSendGuard`；删除设置和审计日志必须由用户做出单独、明确的选择。
 
+## macOS 候选包
+
+macOS 构建前安装 Rust 1.92+、Apple Silicon/Intel 两个 target 和 Xcode Command Line Tools，然后运行：
+
+```bash
+MACOS_BUILD_KIND=universal ./packaging/macos/build-app.sh
+```
+
+脚本先执行格式、Clippy 和全工作区测试，再构建 universal `.app`，启用 Hardened Runtime，生成并签名 `dist/macos/WeChatSendGuard-<VERSION>-universal.dmg` 及同名 `.sha256`。正式发布必须设置 `MACOS_CODESIGN_IDENTITY` 与 `MACOS_NOTARY_KEYCHAIN_PROFILE`，完成 notarytool、公证等待和 stapling；临时签名产物只能用于开发验证。
+
+发布门禁还必须记录 macOS 版本、微信版本、bundle/Team 身份、辅助功能与输入监控授权、DMG SHA-256、`codesign --verify --deep --strict`、`spctl`/stapler 结果和完整人工清单。任一缺失都不能声明 macOS 正式兼容。GitHub Release 中的 DMG 文件名必须与应用内更新选择规则一致。
+
 ## 后续平台
 
-macOS 与 Linux 在未来必须分别产出签名/公证或包管理器原生的独立产物，不能共享 Windows 安装器或二进制。共享的是 `guard-core`、Slint 界面、公共配置语义和平台适配契约，而不是嵌入公共代码中的 Windows API。
+Linux 未来必须产出桌面环境认可的独立原生包，不能共享 Windows 安装器或 macOS DMG。三个平台共享的是 `guard-core`、Slint 界面、公共配置语义和平台适配契约，而不是系统 API。

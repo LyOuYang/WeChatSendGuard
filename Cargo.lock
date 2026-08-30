@@ -5918,6 +5918,7 @@ dependencies = [
  "wechat-send-guard-core",
  "wechat-send-guard-desktop-ui",
  "wechat-send-guard-platform-api",
+ "wechat-send-guard-platform-macos",
  "wechat-send-guard-platform-windows",
  "wechat-send-guard-service",
  "windows",
@@ -5947,6 +5948,17 @@ name = "wechat-send-guard-platform-api"
 version = "1.2.0"
 dependencies = [
  "wechat-send-guard-core",
+]
+
+[[package]]
+name = "wechat-send-guard-platform-macos"
+version = "1.2.0"
+dependencies = [
+ "cc",
+ "serde_json",
+ "uuid",
+ "wechat-send-guard-core",
+ "wechat-send-guard-platform-api",
 ]
 
 [[package]]
