@@ -30,6 +30,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
       - name: Check formatting, lint, and tests
@@ -65,6 +66,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt, clippy
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
       - name: Check formatting, lint, and tests
