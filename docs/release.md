@@ -1,8 +1,14 @@
-# Windows 与 macOS 发布流程
+# Windows 与 macOS 构建和发布流程
+
+本项目采用“分支构建、Tag 发布、双平台原子发布”模型：推送代码只做验证和候选包构建；推送 `v<版本>` Tag 才会签名、验证并创建正式 GitHub Release。Windows 和 macOS 必须来自同一个 Tag/Commit，任一平台失败都不会创建 Release。
 
 ## 版本规则
 
-`VERSION` 是唯一的产品版本来源，使用 SemVer：`主版本.次版本.修订版本`。每个 Rust 包和 Windows 安装器元数据必须与它一致。应用版本与设置的 `schemaVersion` 独立；当前 `1.2.0` 对应 `schemaVersion: 2`，只有存在经过记录的设置迁移时才升级配置架构版本。
+`VERSION` 是产品版本来源，使用 SemVer：`主版本.次版本.修订版本`。每个 Rust 包、Windows 安装器和 macOS bundle 元数据必须与它一致；Tag 必须严格为 `v<VERSION>`，且 Tag 对应提交必须已经在 `main` 分支中。应用版本与设置的 `schemaVersion` 独立；只有存在经过记录的设置迁移时才升级配置架构版本。
+
+## 分支构建
+
+`.github/workflows/ci.yml` 在 PR、`dev`/`main` 推送和手动运行时执行格式、Clippy、测试以及 Windows x64 和 macOS universal 构建。`dev` 产物用于集成验证，`main` 产物用于发布前复核；两者都只上传带 Commit SHA 的 Actions Artifact，不创建 GitHub Release。平台 Job 独立运行，单个平台失败时可以在 Actions 中只重跑该 Job。
 
 ## 本地打包
 
@@ -32,18 +38,20 @@ NSIS 不在 `PATH` 时，可传入完整路径：
 
 当 NSIS 未加入 `PATH` 时，构建脚本可接收 `-MakensisPath`。NSIS 只是开发期打包器，不会进入安装包。
 
-## GitHub Actions 自动发布
+## GitHub Actions 正式发布
 
-`.github/workflows/release-windows.yml` 在 Windows 2022 runner 上运行。发布负责人完成上述人工验证和版本更新后，推送与 `VERSION` 严格一致的标签即可：
+`.github/workflows/release.yml` 在 Windows 2022 和 macOS 14 runner 上并行构建。发布负责人完成版本更新、`main` 双平台构建和人工验证后，推送与 `VERSION` 严格一致的标签即可：
 
 ```powershell
 git tag v<VERSION>
 git push origin v<VERSION>
 ```
 
-工作流会校验标签、格式、Clippy 和测试，安装 NSIS，构建安装器，生成 `WeChatSendGuard-Setup-<VERSION>.exe.sha256`，再把两者作为同名 GitHub Release 的资产发布。手动运行工作流仅上传构建产物，便于预发布复核，不会创建 Release。
+工作流先校验 Tag、`VERSION`、Cargo 版本和 `main` 祖先关系，再独立构建 Windows 安装器和 macOS universal DMG。最终 Publish Job 只有在两个平台都成功、四个资产和 SHA-256 全部校验通过后才创建同一个 GitHub Release。Windows 成功而 macOS 失败时，只需重跑 macOS Job；如果代码、版本或打包脚本发生变化，则必须使用新 Commit 和新 Tag 重新构建两个平台。
 
-应用内更新仅接受这种命名和校验文件齐全的正式 Release；因此不要手动重命名或删除任一资产。代码签名不是自动发布的前置条件，但生产发布建议将签名步骤和证书机密单独接入受保护的发布环境。
+正式 macOS Job 使用 `production` Environment，并要求配置以下 Secrets：`MACOS_CODESIGN_IDENTITY`、`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`MACOS_NOTARY_API_KEY_BASE64`、`MACOS_NOTARY_KEY_ID`、`MACOS_NOTARY_ISSUER_ID`。证书在临时 keychain 中导入，App Store Connect API Key 用于 `notarytool`；没有这些凭据时流程会失败关闭，不会发布临时签名包。分支构建允许临时签名，仅用于开发验证。
+
+应用内更新仅接受这种命名和校验文件齐全的正式 Release；因此不要手动重命名或删除任一资产。生产签名和公证是 macOS 正式发布的前置条件，相关证书和 API Key 只能放在受保护的 GitHub Environment 中。
 
 ## 安装器行为
 

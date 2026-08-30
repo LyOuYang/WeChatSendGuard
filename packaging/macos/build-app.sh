@@ -11,6 +11,9 @@ APP_EXECUTABLE="$APP_CONTENTS/MacOS/WeChatSendGuard"
 BUILD_TOOL="${CARGO:-cargo}"
 SIGNING_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"
 BUILD_KIND="${MACOS_BUILD_KIND:-apple-silicon}"
+NOTARY_API_KEY_PATH="${MACOS_NOTARY_API_KEY_PATH:-}"
+NOTARY_KEY_ID="${MACOS_NOTARY_KEY_ID:-}"
+NOTARY_ISSUER_ID="${MACOS_NOTARY_ISSUER_ID:-}"
 TEMPORARY_DIRECTORY="$(mktemp -d /tmp/WeChatSendGuard-macos.XXXXXX)"
 trap 'rm -rf "$TEMPORARY_DIRECTORY"' EXIT
 
@@ -78,9 +81,19 @@ else
     codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DISK_IMAGE"
 fi
 
-if [[ -n "${MACOS_NOTARY_KEYCHAIN_PROFILE:-}" && "$SIGNING_IDENTITY" != "-" ]]; then
-    xcrun notarytool submit "$DISK_IMAGE" \
-        --keychain-profile "$MACOS_NOTARY_KEYCHAIN_PROFILE" --wait
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    if [[ -n "$NOTARY_API_KEY_PATH" && -n "$NOTARY_KEY_ID" && -n "$NOTARY_ISSUER_ID" ]]; then
+        xcrun notarytool submit "$DISK_IMAGE" \
+            --key "$NOTARY_API_KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait
+    elif [[ -n "${MACOS_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+        xcrun notarytool submit "$DISK_IMAGE" \
+            --keychain-profile "$MACOS_NOTARY_KEYCHAIN_PROFILE" --wait
+    else
+        echo "Production signing requires App Store Connect API key or keychain profile." >&2
+        exit 1
+    fi
     xcrun stapler staple "$DISK_IMAGE"
 fi
 
