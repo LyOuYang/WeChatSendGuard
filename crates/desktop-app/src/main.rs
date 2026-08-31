@@ -46,14 +46,14 @@ use wechat_send_guard_platform_macos::{
 };
 #[cfg(windows)]
 use wechat_send_guard_platform_windows::{
-    KeyboardKey, SendButtonDiagnostic as PlatformSendButtonDiagnostic, TRUSTED_WEIXIN_PATH,
+    KeyboardKey, RunningWeixinExecutable, SendButtonDiagnostic as PlatformSendButtonDiagnostic,
     WindowsAuditLog as PlatformAuditLog, WindowsContextMonitor as PlatformContextMonitor,
     WindowsContextProvider as PlatformContextProvider,
     WindowsInputInjector as PlatformInputInjector, WindowsKeyboardHook as PlatformKeyboardHook,
     WindowsMouseHook as PlatformMouseHook,
     WindowsStartupRegistration as PlatformStartupRegistration, activate_window,
     center_popup_over_window, cursor_screen_position, default_audit_log_directory,
-    enable_high_dpi_awareness, is_valid_weixin_executable_path, path_matches_trusted_weixin,
+    discover_running_weixin_executable, enable_high_dpi_awareness, path_matches_configured_weixin,
     select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
 };
 use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
@@ -62,6 +62,8 @@ const APPLICATION_DIRECTORY: &str = "WeChatSendGuard";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+#[cfg(windows)]
+const WEIXIN_DETECTION_INTERVAL: Duration = Duration::from_secs(3);
 const CONFIRMATION_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const HOLD_TICK_INTERVAL: Duration = Duration::from_millis(20);
 const ADD_CURRENT_CHAT_CONTEXT_MAX_AGE: Duration = Duration::from_secs(5);
@@ -81,6 +83,31 @@ struct BackgroundTimers {
     initial_update_check: Timer,
     recurring_update_check: Timer,
     log_cleanup: Timer,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeixinDetection {
+    NotFound,
+    Multiple,
+    DetectedUnchanged,
+    DetectedUpdated,
+}
+
+#[cfg(windows)]
+impl WeixinDetection {
+    fn persisted(self) -> bool {
+        self == Self::DetectedUpdated
+    }
+
+    fn audit_result(self) -> &'static str {
+        match self {
+            Self::NotFound => "not-found",
+            Self::Multiple => "multiple-installations",
+            Self::DetectedUnchanged => "detected-unchanged",
+            Self::DetectedUpdated => "detected-updated",
+        }
+    }
 }
 
 impl BackgroundTimers {
@@ -172,11 +199,56 @@ impl Controller {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn detect_running_weixin(&mut self) -> Result<WeixinDetection, String> {
+        let mut settings = self.settings.clone();
+        let detection = detect_and_apply_running_weixin(&mut settings);
+        if detection.persisted() {
+            self.apply_settings(settings)?;
+            self.audit.write(AuditEntry::new(
+                SystemTime::now(),
+                None,
+                "diagnostics",
+                detection.audit_result(),
+            ));
+        }
+        Ok(detection)
+    }
+
     fn active_chats(&self) -> &[ProtectedChat] {
         if self.settings.rule_mode == RuleMode::ConfirmUnlessExcluded {
             &self.settings.exempted_chats
         } else {
             &self.settings.protected_chats
+        }
+    }
+}
+
+#[cfg(windows)]
+fn detect_and_apply_running_weixin(settings: &mut AppSettings) -> WeixinDetection {
+    apply_detected_weixin_executable(settings, discover_running_weixin_executable())
+}
+
+#[cfg(windows)]
+fn apply_detected_weixin_executable(
+    settings: &mut AppSettings,
+    detected: RunningWeixinExecutable,
+) -> WeixinDetection {
+    match detected {
+        RunningWeixinExecutable::NotFound => WeixinDetection::NotFound,
+        RunningWeixinExecutable::Multiple => WeixinDetection::Multiple,
+        RunningWeixinExecutable::Unique(path) => {
+            let path = path.display().to_string();
+            if settings
+                .trusted_weixin_executable_path
+                .as_deref()
+                .is_some_and(|configured| path_matches_configured_weixin(configured, &path))
+            {
+                WeixinDetection::DetectedUnchanged
+            } else {
+                settings.trusted_weixin_executable_path = Some(path);
+                WeixinDetection::DetectedUpdated
+            }
         }
     }
 }
@@ -234,7 +306,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         .join(APPLICATION_DIRECTORY)
         .join(SETTINGS_FILE_NAME);
     let store = FileSettingsStore::new(settings_path);
-    let settings = store.load()?.sanitize();
+    let mut settings = store.load()?.sanitize();
+
+    #[cfg(windows)]
+    let weixin_detection = detect_and_apply_running_weixin(&mut settings);
+    #[cfg(windows)]
+    if weixin_detection.persisted() {
+        store.save(settings.clone())?;
+    }
 
     #[cfg(windows)]
     let provider = Arc::new(
@@ -269,6 +348,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             ),
         ]),
     );
+    #[cfg(windows)]
+    audit.write(AuditEntry::new(
+        SystemTime::now(),
+        None,
+        "diagnostics",
+        weixin_detection.audit_result(),
+    ));
     let injector = Arc::new(PlatformInputInjector::with_random_marker());
     let service = Arc::new(GuardService::new(
         settings.clone(),
@@ -321,6 +407,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         Arc::clone(&update_state),
         audit.clone(),
     );
+    #[cfg(windows)]
+    let weixin_detection_timer = install_weixin_detection(&main_window, Rc::clone(&controller));
 
     let mut context_monitor = PlatformContextMonitor::new(provider.clone());
     context_monitor.start()?;
@@ -565,6 +653,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     context_monitor.stop();
     status_timer.stop();
     background_timers.stop();
+    #[cfg(windows)]
+    weixin_detection_timer.stop();
     audit.shutdown();
     Ok(())
 }
@@ -932,11 +1022,10 @@ fn executable_file_version(path: &std::path::Path) -> Option<String> {
 
 #[cfg(windows)]
 fn current_wechat_version(settings: &AppSettings) -> Option<String> {
-    let trusted_path = settings
+    settings
         .trusted_weixin_executable_path
         .as_deref()
-        .unwrap_or(TRUSTED_WEIXIN_PATH);
-    executable_file_version(std::path::Path::new(trusted_path))
+        .and_then(|path| executable_file_version(std::path::Path::new(path)))
 }
 
 #[cfg(target_os = "macos")]
@@ -946,11 +1035,11 @@ fn current_wechat_version(_settings: &AppSettings) -> Option<String> {
 
 #[cfg(windows)]
 fn current_trusted_wechat_identity(settings: &AppSettings) -> String {
-    let trusted_path = settings
+    settings
         .trusted_weixin_executable_path
         .as_deref()
-        .unwrap_or(TRUSTED_WEIXIN_PATH);
-    diagnostics::redact_windows_path(trusted_path)
+        .map(diagnostics::redact_windows_path)
+        .unwrap_or_else(|| "尚未检测到运行中的微信".to_owned())
 }
 
 #[cfg(target_os = "macos")]
@@ -959,21 +1048,11 @@ fn current_trusted_wechat_identity(_settings: &AppSettings) -> String {
 }
 
 #[cfg(windows)]
-fn default_wechat_identity_value() -> &'static str {
-    TRUSTED_WEIXIN_PATH
-}
-
-#[cfg(target_os = "macos")]
-fn default_wechat_identity_value() -> &'static str {
-    TRUSTED_WECHAT_BUNDLE_ID
-}
-
-#[cfg(windows)]
 fn wechat_identity_value_for_settings(settings: &AppSettings) -> String {
     settings
         .trusted_weixin_executable_path
         .as_deref()
-        .unwrap_or(TRUSTED_WEIXIN_PATH)
+        .unwrap_or("尚未检测到运行中的微信")
         .to_owned()
 }
 
@@ -1123,12 +1202,33 @@ fn bind_window_callbacks(
             }
         }
     });
+    #[cfg(windows)]
     main_window.on_reset_weixin_executable_path({
+        let controller = Rc::clone(&controller);
         let main_window_weak = main_window_weak.clone();
         move || {
+            let result = controller.borrow_mut().detect_running_weixin();
             if let Some(window) = main_window_weak.upgrade() {
-                window.set_weixin_executable_path(default_wechat_identity_value().into());
-                mark_unsaved(&main_window_weak);
+                match result {
+                    Ok(WeixinDetection::DetectedUpdated | WeixinDetection::DetectedUnchanged) => {
+                        let settings = controller.borrow().settings.clone();
+                        window.set_weixin_executable_path(
+                            wechat_identity_value_for_settings(&settings).into(),
+                        );
+                        set_save_status(&window, "已识别正在运行的微信", false);
+                    }
+                    Ok(WeixinDetection::NotFound) => {
+                        set_save_status(&window, "未检测到运行中的微信，请先启动微信后重试", true);
+                    }
+                    Ok(WeixinDetection::Multiple) => {
+                        set_save_status(
+                            &window,
+                            "检测到多个微信安装位置，请关闭多余微信后重试",
+                            true,
+                        );
+                    }
+                    Err(error) => set_save_status(&window, error, true),
+                }
             }
         }
     });
@@ -1649,6 +1749,24 @@ fn install_status_refresh(
     timer
 }
 
+#[cfg(windows)]
+fn install_weixin_detection(main_window: &AppWindow, controller: Rc<RefCell<Controller>>) -> Timer {
+    let main_window_weak = main_window.as_weak();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, WEIXIN_DETECTION_INTERVAL, move || {
+        let result = controller.borrow_mut().detect_running_weixin();
+        if let Ok(detection) = result
+            && detection.persisted()
+            && let Some(window) = main_window_weak.upgrade()
+        {
+            let settings = controller.borrow().settings.clone();
+            window.set_weixin_executable_path(wechat_identity_value_for_settings(&settings).into());
+            set_save_status(&window, "已自动识别正在运行的微信", false);
+        }
+    });
+    timer
+}
+
 fn install_background_timers(
     main_window: &AppWindow,
     controller: Rc<RefCell<Controller>>,
@@ -1864,11 +1982,10 @@ fn configure_platform_ui(window: &AppWindow) {
     window.set_application_data_description(
         "所有设置保存在当前 Windows 用户目录，不需要管理员权限。".into(),
     );
-    window.set_client_identity_editable(true);
-    window.set_client_identity_placeholder(TRUSTED_WEIXIN_PATH.into());
-    window.set_client_identity_help(
-        "默认路径已自动填入；客户端版本或 UI Automation 控件不兼容时，应用不会注入按键。".into(),
-    );
+    window.set_client_identity_editable(false);
+    window.set_client_identity_placeholder("启动后自动检测正在运行的微信".into());
+    window
+        .set_client_identity_help("启动后会自动识别正在运行的微信；不会要求填写安装目录。".into());
     window.set_startup_label("随 Windows 启动".into());
     window.set_startup_note("使用当前用户的启动项；不会请求管理员权限。".into());
 }
@@ -1976,11 +2093,6 @@ fn settings_from_form(window: &AppWindow, current: &AppSettings) -> Result<AppSe
     settings.auto_check_updates = window.get_auto_check_updates();
     settings.log_retention_days =
         parse_bounded_u32(&window.get_log_retention_days(), 1, 30, "日志保留天数")?;
-    #[cfg(windows)]
-    {
-        settings.trusted_weixin_executable_path =
-            weixin_executable_path_override_from_form(&window.get_weixin_executable_path())?;
-    }
     update_selected_aliases(
         &mut settings,
         &window.get_selected_chat_id(),
@@ -2474,23 +2586,6 @@ fn update_selected_aliases(settings: &mut AppSettings, selected_id: &str, aliase
 }
 
 #[cfg(windows)]
-fn weixin_executable_path_override_from_form(value: &str) -> Result<Option<String>, String> {
-    let value = value.trim().trim_matches('"').trim();
-    if value.is_empty() {
-        return Err("微信客户端路径不能为空；如需使用默认安装位置，请点击“恢复默认”。".to_owned());
-    }
-
-    if !is_valid_weixin_executable_path(value) {
-        return Err("微信客户端路径必须是绝对路径，且必须指向 Weixin.exe。".to_owned());
-    }
-
-    if path_matches_trusted_weixin(value) {
-        Ok(None)
-    } else {
-        Ok(Some(value.to_owned()))
-    }
-}
-
 fn parse_bounded_u32(value: &str, minimum: u32, maximum: u32, label: &str) -> Result<u32, String> {
     let parsed = value
         .trim()
@@ -2601,13 +2696,17 @@ const fn unknown_behavior_from_ui(behavior: i32) -> Option<UnknownContextBehavio
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
-    use super::weixin_executable_path_override_from_form;
+    use super::{WeixinDetection, apply_detected_weixin_executable};
     use super::{
         is_background_start_argument, parse_bounded_u32, status_for_context,
         window_position_for_cursor_drag,
     };
     use slint::PhysicalPosition;
+    #[cfg(windows)]
+    use std::path::PathBuf;
     use wechat_send_guard_core::{AppSettings, ChatContext};
+    #[cfg(windows)]
+    use wechat_send_guard_platform_windows::RunningWeixinExecutable;
 
     #[test]
     fn bounded_integer_parser_rejects_invalid_settings_before_persistence() {
@@ -2618,19 +2717,52 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn weixin_executable_path_uses_default_only_when_it_matches_the_supported_path() {
+    fn detected_custom_weixin_path_is_persisted_without_user_entry() {
+        let mut settings = AppSettings::default();
+        let result = apply_detected_weixin_executable(
+            &mut settings,
+            RunningWeixinExecutable::Unique(PathBuf::from(r"D:\Apps\Weixin\Weixin.exe")),
+        );
+        assert_eq!(result, WeixinDetection::DetectedUpdated);
         assert_eq!(
-            weixin_executable_path_override_from_form(
-                r"c:/PROGRAM FILES/Tencent/Weixin/Weixin.exe"
-            ),
-            Ok(None)
+            settings.trusted_weixin_executable_path.as_deref(),
+            Some(r"D:\Apps\Weixin\Weixin.exe")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn same_detected_weixin_path_does_not_rewrite_settings() {
+        let mut settings = AppSettings {
+            trusted_weixin_executable_path: Some(r"D:\Apps\Weixin\Weixin.exe".into()),
+            ..AppSettings::default()
+        };
+        let result = apply_detected_weixin_executable(
+            &mut settings,
+            RunningWeixinExecutable::Unique(PathBuf::from(r"d:/apps/weixin/Weixin.exe")),
+        );
+        assert_eq!(result, WeixinDetection::DetectedUnchanged);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_or_multiple_weixin_does_not_change_a_saved_path() {
+        let mut settings = AppSettings {
+            trusted_weixin_executable_path: Some(r"D:\Apps\Weixin\Weixin.exe".into()),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            apply_detected_weixin_executable(&mut settings, RunningWeixinExecutable::NotFound),
+            WeixinDetection::NotFound
         );
         assert_eq!(
-            weixin_executable_path_override_from_form(r"D:\Apps\Weixin\Weixin.exe"),
-            Ok(Some(r"D:\Apps\Weixin\Weixin.exe".to_owned()))
+            apply_detected_weixin_executable(&mut settings, RunningWeixinExecutable::Multiple),
+            WeixinDetection::Multiple
         );
-        assert!(weixin_executable_path_override_from_form(r"Weixin.exe").is_err());
-        assert!(weixin_executable_path_override_from_form(r"D:\Apps\Weixin\other.exe").is_err());
+        assert_eq!(
+            settings.trusted_weixin_executable_path.as_deref(),
+            Some(r"D:\Apps\Weixin\Weixin.exe")
+        );
     }
 
     #[test]

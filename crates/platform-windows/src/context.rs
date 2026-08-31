@@ -41,8 +41,7 @@ use windows::Win32::{
 };
 
 use crate::trust::{
-    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust_for_executable,
-    is_valid_weixin_executable_path,
+    ProcessTrust, assess_window_trust_for_executable, is_valid_weixin_executable_path,
 };
 
 const INPUT_AUTOMATION_ID: &str = "chat_input_field";
@@ -245,8 +244,8 @@ impl WindowsContextProvider {
         Self::new_with_trusted_weixin_executable_path(None)
     }
 
-    /// Creates a provider with the optional per-user Windows path override. `None` uses the
-    /// supported installation path and an invalid configured value cannot match a process.
+    /// Creates a provider with the optional auto-detected Windows executable path. Without a
+    /// detected path no process is trusted until the application discovers a running Weixin.
     pub fn new_with_trusted_weixin_executable_path(configured_path: Option<&str>) -> Self {
         Self {
             current: RwLock::new(Arc::new(PublishedSnapshot {
@@ -941,7 +940,7 @@ fn rebase_snapshot_for_current_window(
 
 fn resolved_trusted_weixin_path(configured_path: Option<&str>) -> Option<PathBuf> {
     match configured_path {
-        None => Some(PathBuf::from(TRUSTED_WEIXIN_PATH)),
+        None => None,
         Some(value) => {
             let path = PathBuf::from(value.trim().trim_matches('"').trim());
             is_valid_weixin_executable_path(&path).then_some(path)
@@ -2104,13 +2103,10 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 mod tests {
     use super::{
         ScreenRect, SendButtonDiagnostic, SendButtonSnapshot, SendButtonSnapshotState,
-        TRUSTED_WEIXIN_PATH, WindowsContextProvider, normalize_draft_preview,
-        resolved_trusted_weixin_path, send_button_candidate_score,
+        WindowsContextProvider, normalize_draft_preview, resolved_trusted_weixin_path,
+        send_button_candidate_score,
     };
-    use std::{
-        path::PathBuf,
-        time::{Duration, SystemTime},
-    };
+    use std::time::{Duration, SystemTime};
     use wechat_send_guard_core::ChatContext;
 
     fn recognized_chat(observed_at: SystemTime) -> ChatContext {
@@ -2193,11 +2189,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_external_path_override_disables_trust_instead_of_falling_back() {
-        assert_eq!(
-            resolved_trusted_weixin_path(None),
-            Some(PathBuf::from(TRUSTED_WEIXIN_PATH))
-        );
+    fn missing_or_invalid_external_path_disables_trust() {
+        assert_eq!(resolved_trusted_weixin_path(None), None);
         assert_eq!(
             resolved_trusted_weixin_path(Some(r"D:\Apps\Weixin\other.exe")),
             None

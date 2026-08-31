@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    ptr,
+};
 use wechat_send_guard_platform_api::PlatformError;
 use windows::{
     Win32::{
@@ -7,12 +10,21 @@ use windows::{
             OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
             QueryFullProcessImageNameW,
         },
-        UI::WindowsAndMessaging::GetWindowThreadProcessId,
+        UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId},
     },
     core::PWSTR,
 };
 
 pub const TRUSTED_WEIXIN_PATH: &str = r"C:\Program Files\Tencent\Weixin\Weixin.exe";
+
+/// Outcome of discovering top-level Weixin windows. Multiple installations are deliberately not
+/// resolved automatically: selecting one would silently expand the trusted executable boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunningWeixinExecutable {
+    NotFound,
+    Unique(PathBuf),
+    Multiple,
+}
 
 /// A user-selected target must remain an absolute `Weixin.exe` path. Existence is not
 /// checked here: a missing path is safe because it cannot match a running process.
@@ -117,13 +129,62 @@ fn query_process_path(handle: windows::Win32::Foundation::HANDLE) -> windows::co
     }
 }
 
+/// Finds the executable path reported by a running Weixin top-level window. The resulting path
+/// comes from the same Windows process API used by foreground trust checks, so custom installation
+/// folders, junctions, and redirected launch shortcuts do not require the user to type a path.
+pub fn discover_running_weixin_executable() -> RunningWeixinExecutable {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    // SAFETY: the callback receives a pointer to `paths`, which remains valid for the synchronous
+    // EnumWindows call and is not retained by Windows after that call returns.
+    let _ = unsafe {
+        EnumWindows(
+            Some(collect_running_weixin_window),
+            windows::Win32::Foundation::LPARAM(ptr::from_mut(&mut paths) as isize),
+        )
+    };
+    paths.sort_by_key(|path| normalize_windows_path(path));
+    paths.dedup_by(|left, right| path_matches_configured_weixin(left, right));
+    match paths.len() {
+        0 => RunningWeixinExecutable::NotFound,
+        1 => RunningWeixinExecutable::Unique(paths.remove(0)),
+        _ => RunningWeixinExecutable::Multiple,
+    }
+}
+
+unsafe extern "system" fn collect_running_weixin_window(
+    window: HWND,
+    context: windows::Win32::Foundation::LPARAM,
+) -> windows::core::BOOL {
+    // SAFETY: `context` was created from a mutable pointer to a Vec<PathBuf> immediately before
+    // EnumWindows and remains valid for this synchronous callback invocation.
+    let paths = unsafe { &mut *(context.0 as *mut Vec<PathBuf>) };
+    let mut process_id = 0;
+    // SAFETY: `process_id` is a valid out pointer and the window handle is supplied by EnumWindows.
+    unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+    if process_id == 0 {
+        return true.into();
+    }
+    // SAFETY: no handle is inherited and every successful handle is closed before returning.
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+    else {
+        return true.into();
+    };
+    let path = query_process_path(handle).ok().map(PathBuf::from);
+    // SAFETY: `handle` was returned by OpenProcess and is closed exactly once in this callback.
+    let _ = unsafe { CloseHandle(handle) };
+    if let Some(path) = path.filter(|path| is_valid_weixin_executable_path(path)) {
+        paths.push(path);
+    }
+    true.into()
+}
+
 /// Windows paths are case-insensitive for this trust check. Failure to match exactly is safe:
 /// the caller will not observe or inject into that process.
 pub fn path_matches_trusted_weixin(path: impl AsRef<Path>) -> bool {
     path_matches_configured_weixin(path, Path::new(TRUSTED_WEIXIN_PATH))
 }
 
-pub(crate) fn path_matches_configured_weixin(
+pub fn path_matches_configured_weixin(
     process_path: impl AsRef<Path>,
     trusted_executable_path: impl AsRef<Path>,
 ) -> bool {
