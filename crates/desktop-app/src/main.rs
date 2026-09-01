@@ -14,6 +14,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     error::Error,
     fs,
     path::PathBuf,
@@ -163,6 +164,8 @@ impl Controller {
         }
         self.service.update_settings(settings.clone());
         self.audit.set_retention_days(settings.log_retention_days);
+        self.audit
+            .set_weixin_version(current_wechat_version(&settings));
         if retention_changed {
             let audit_for_cleanup = self.audit.clone();
             thread::spawn(move || {
@@ -328,9 +331,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         settings.intercept_keyboard_enter,
         settings.intercept_send_button,
     );
-    let audit = Arc::new(PlatformAuditLog::new(
+    let initial_weixin_version = current_wechat_version(&settings);
+    let audit = Arc::new(PlatformAuditLog::new_with_versions(
         default_audit_log_directory(&local_app_data),
         settings.log_retention_days,
+        APPLICATION_VERSION,
+        initial_weixin_version.clone(),
     )?);
     let _ = audit.cleanup();
     audit.write(
@@ -340,7 +346,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             ("architecture", std::env::consts::ARCH.to_owned()),
             (
                 "weixinVersion",
-                current_wechat_version(&settings).unwrap_or_else(|| "未能读取".to_owned()),
+                initial_weixin_version.unwrap_or_else(|| "未能读取".to_owned()),
             ),
             (
                 "trustedWeixinIdentity",
@@ -540,6 +546,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         ) {
             return false;
         }
+        let mut diagnostic_details =
+            BTreeMap::from([("source".to_owned(), "send-button".to_owned())]);
+        if let Some(context_diagnostics) = mouse_hook_provider.current_diagnostics() {
+            diagnostic_details
+                .extend(context_diagnostics.audit_details(&mouse_hook_provider.current(), now));
+        }
         mouse_hook_audit.write(
             AuditEntry::new(
                 now,
@@ -548,7 +560,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 diagnosis.audit_result(),
             )
             .with_trace_id(trace_id)
-            .with_details([("source", "send-button")]),
+            .with_details(diagnostic_details),
         );
         if !should_intercept {
             return false;
@@ -891,9 +903,13 @@ fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
 }
 
 fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
-    let (audit, settings) = {
+    let (audit, settings, weixin_process_id) = {
         let controller = controller.borrow();
-        (controller.audit.clone(), controller.settings.clone())
+        (
+            controller.audit.clone(),
+            controller.settings.clone(),
+            controller.provider.current().process_id,
+        )
     };
     let default_name = format!("WeChatSendGuard-diagnostics-{}.zip", APPLICATION_VERSION);
     let destination = match select_diagnostic_export(&default_name) {
@@ -908,12 +924,24 @@ fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) 
         set_save_status(window, format!("无法准备诊断日志：{error}"), true);
         return;
     }
+    let weixin_version = current_wechat_version(&settings);
+    #[cfg(windows)]
+    let weixin_installation = Some(diagnostics::collect_weixin_installation_diagnostics(
+        settings.trusted_weixin_executable_path.as_deref(),
+        weixin_process_id,
+    ));
+    #[cfg(target_os = "macos")]
+    let weixin_installation = None;
     let environment = diagnostics::DiagnosticEnvironment {
         application_version: APPLICATION_VERSION,
+        weixin_version,
+        exported_at_local: diagnostics::local_time_now(),
+        audit_schema_version: 2,
+        audit_session_id: audit.session_id().to_string(),
         operating_system: operating_system_version(),
         architecture: std::env::consts::ARCH,
-        weixin_version: current_wechat_version(&settings),
         trusted_weixin_identity: current_trusted_wechat_identity(&settings),
+        weixin_installation,
         auto_check_updates: settings.auto_check_updates,
         ignored_update_version: settings.ignored_update_version.as_deref(),
     };
@@ -961,71 +989,11 @@ fn operating_system_version() -> String {
 }
 
 #[cfg(windows)]
-fn executable_file_version(path: &std::path::Path) -> Option<String> {
-    use std::{ffi::c_void, mem::size_of, os::windows::ffi::OsStrExt};
-    use windows::{
-        Win32::Storage::FileSystem::{
-            GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
-        },
-        core::PCWSTR,
-    };
-
-    let path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: path is NUL-terminated and retained for the entire synchronous version query.
-    let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(path.as_ptr()), None) };
-    if size == 0 {
-        return None;
-    }
-    let mut data = vec![0u8; size as usize];
-    // SAFETY: data is a valid mutable buffer of exactly the queried version-info size.
-    unsafe {
-        GetFileVersionInfoW(
-            PCWSTR(path.as_ptr()),
-            None,
-            size,
-            data.as_mut_ptr().cast::<c_void>(),
-        )
-        .ok()?;
-    }
-    let mut fixed: *mut c_void = std::ptr::null_mut();
-    let mut length = 0u32;
-    let root = [0u16];
-    // SAFETY: data remains alive and root is a NUL-terminated sub-block selector for this call.
-    if !unsafe {
-        VerQueryValueW(
-            data.as_ptr().cast::<c_void>(),
-            PCWSTR(root.as_ptr()),
-            &mut fixed,
-            &mut length,
-        )
-    }
-    .as_bool()
-        || fixed.is_null()
-        || length < size_of::<VS_FIXEDFILEINFO>() as u32
-    {
-        return None;
-    }
-    // SAFETY: VerQueryValueW returned a buffer with at least a VS_FIXEDFILEINFO structure.
-    let fixed = unsafe { &*(fixed.cast::<VS_FIXEDFILEINFO>()) };
-    Some(format!(
-        "{}.{}.{}.{}",
-        fixed.dwFileVersionMS >> 16,
-        fixed.dwFileVersionMS & 0xffff,
-        fixed.dwFileVersionLS >> 16,
-        fixed.dwFileVersionLS & 0xffff
-    ))
-}
-
-#[cfg(windows)]
 fn current_wechat_version(settings: &AppSettings) -> Option<String> {
     settings
         .trusted_weixin_executable_path
         .as_deref()
-        .and_then(|path| executable_file_version(std::path::Path::new(path)))
+        .and_then(|path| diagnostics::windows_file_version(std::path::Path::new(path)))
 }
 
 #[cfg(target_os = "macos")]

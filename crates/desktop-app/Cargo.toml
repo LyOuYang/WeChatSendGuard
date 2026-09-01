@@ -12,6 +12,7 @@ name = "WeChatSendGuard"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 slint.workspace = true
 raw-window-handle.workspace = true
 reqwest.workspace = true

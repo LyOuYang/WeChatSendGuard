@@ -33,6 +33,16 @@
 11. 每轮两栏/三栏测试前后记录时间，在 `%LocalAppData%\WeChatSendGuard\logs` 中截取对应时间段的日志：按钮测试应能看到 `send-button-diagnostic`，随后看到 `confirmation` 或 `send-blocked`；确认发送后应看到同一 `traceId` 的 `send`。若看到 `send-button-snapshot-stale`、`send-button-not-found` 或 `send-button-geometry-unavailable`，同时检查是否出现 `button-fallback-intercepted`，以区分安全兜底拦截和识别仍未命中。
 12. 保持两栏和三栏各测试一次：拖动微信窗口但不改变大小后立即点击“发送”，应直接弹出确认；改变窗口大小、跨不同 DPI 显示器移动或打开/关闭第三栏后立即点击，允许短暂进入窄区兜底，但不能直接发送。关闭“拦截发送按钮”后，上述点击应完全按微信原生行为执行且日志不再生成按钮诊断；重新开启后无需重启即可恢复。
 
+## Windows 不可识别诊断判读
+
+1. 每条 schema v2 审计记录应依次以 `localTime`、`applicationVersion`、`weixinVersion` 开头，并包含 `sessionId` 和 `processId`；同一时间出现多个 session/process 表示存在多个守护实例。
+2. `trustedWeixin=true` 且 `contextCompatibilityAvailable=false` 表示自定义路径信任已通过，失败发生在 UIA 界面识别，不应再归因于“没有找到 Weixin.exe”。
+3. `uiaRootAvailable=false` 或 `uiaStatus=query-failed` 表示没有取得可用根节点；结合 `uiaErrorCode`（含可安全提取时的 HRESULT）检查 COM/UIA、权限或运行环境。
+4. `uiaRootAvailable=true` 后先检查 `uiaTreeQueryStatus`：`query-failed`/`length-failed` 结合 `uiaTreeErrorCode` 表示整树枚举失败；`success` 但 `uiaTreeDescendantCount=0` 表示只取得原生窗口壳；`partial-property-read-failure` 表示子节点存在但控件类型、AutomationId 或 ClassName 至少有一类无法稳定读取。
+5. 根节点有子节点但 `editorFound=false` 或 `chatTitleElementFound=false` 时，分别检查 `editorQueryStatus`、`chatTitleQueryStatus`、`groupTitleQueryStatus` 及各自的错误码和候选数。候选数为 0 且树中 AutomationId/ClassName 大量可读，表示微信控件标识很可能已变化；AutomationId/ClassName 可读数接近 0，则表示 UIA 桥接只暴露了不完整子树。`uiaTreeControlTypeCounts` 用于对比正常机与故障机的无内容树结构。
+6. 发送按钮问题按 `sendToolbarCount`、`sendButtonCandidateCount`、`sendButtonState` 逐级判断：工具栏为 0 是工具栏锚点缺失，候选为 0 是“发送”按钮结构/名称未命中，`query-failed` 则按 `uiaErrorCode` 排查查询失败。
+7. 对比 `environment.json` 中 `weixinInstallation`：`dllCandidates` 给出安装目录内各份 DLL 的无路径指纹，`loadedModuleScanStatus=found` 时 `loadedWeixinDll` 表示该微信进程实际加载的版本；若 `loadedWeixinDllMatchesSelectedCandidate=false`，优先排查自定义目录、升级残留或启动器加载差异。若实际加载 DLL 的哈希一致而 UIA 树不同，再排查系统环境或微信运行状态。
+
 ## 隐私与恢复
 
 1. 检查设置和审计文件，确认审计行不包含草稿文本或聊天标题；确认环境条目包含应用、Windows 和微信版本，发送链路可用匿名 `traceId` 串联。

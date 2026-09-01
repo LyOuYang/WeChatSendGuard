@@ -637,10 +637,19 @@ impl GuardService {
         source: &str,
         timestamp: SystemTime,
     ) {
+        let result = result.into();
+        let mut details =
+            std::collections::BTreeMap::from([("source".to_owned(), source.to_owned())]);
+        if result == "context-unavailable"
+            && let Some(diagnostics) = self.platform.current_diagnostics()
+        {
+            let context = self.platform.current();
+            details.extend(diagnostics.audit_details(&context, timestamp));
+        }
         self.audit_log.write(
             AuditEntry::new(timestamp, protected_chat_id, event_type, result)
                 .with_trace_id(trace_id)
-                .with_details([("source", source)]),
+                .with_details(details),
         );
     }
 }
