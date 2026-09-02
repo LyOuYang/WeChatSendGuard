@@ -51,7 +51,7 @@ MACOS_BUILD_KIND=universal \
 ./packaging/macos/build-app.sh
 ```
 
-默认脚本生成 `dist/macos/WeChatSendGuard-<VERSION>-arm64.dmg` 和同名 `.sha256`。设置 `MACOS_BUILD_KIND=universal` 时还需安装 `x86_64-apple-darwin` target，并生成 GitHub Release 使用的 universal DMG。应用内更新只接受 universal 命名；Windows 仍只接受自己的 `.exe` 资产。普通用户不需要手动校验 `.sha256`，应用内更新会自动完成校验。
+默认脚本生成 `dist/macos/WeChatSendGuard-<VERSION>-arm64.dmg` 和同名 `.sha256`。设置 `MACOS_BUILD_KIND=universal` 时还需安装 `x86_64-apple-darwin` target，并生成 GitHub Release 使用的 universal DMG。Beta 文件名可以包含完整 SemVer 预发布后缀，例如 `WeChatSendGuard-1.4.0-beta.1-universal.dmg`。由于 Apple 要求 `CFBundleShortVersionString` 和 `CFBundleVersion` 只能包含数字与点，脚本会将应用版本 `1.4.0-beta.1` 映射为数字短版本 `1.4.0` 和纯数字构建号；应用界面仍显示 Cargo 的完整版本。应用内更新只接受 universal 命名；Windows 仍只接受自己的 `.exe` 资产。普通用户不需要手动校验 `.sha256`，应用内更新会自动完成校验。
 
 Ad-hoc 签名不能替代 Developer ID 或公证，因此首次打开可能需要用户在 Finder 中右键选择“打开”，或在“系统设置 → 隐私与安全性”中选择“仍要打开”。如果系统报告“应用已损坏”，先重新下载；仍失败时可使用 `xattr -dr com.apple.quarantine /Applications/WeChatSendGuard.app` 排障。未来购买 Apple Developer 账号后，可以在不改变产物命名的前提下增加 Developer ID、公证和 stapling。
 

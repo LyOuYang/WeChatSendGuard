@@ -108,6 +108,6 @@ cargo test --workspace
 
 安装器使用 NSIS 的 LZMA 固实压缩，因此不应直接拿它和 `target\...\release\WeChatSendGuard.exe` 比大小：约 20 MB 的主程序通常会得到约 5–8 MB 的安装包；15 MB 是发布上限，不是目标大小。
 
-推送形如 `v1.3.1` 且与 `VERSION` 完全一致的标签，会触发 GitHub Actions：检查格式、静态检查和测试，构建 Windows 安装包、macOS Universal DMG 及对应 SHA-256 文件，并自动创建同名 GitHub Release。普通用户不需要手动处理 SHA-256；应用内更新会自动完成校验。手动触发工作流只产出可下载的构建产物，不发布版本。
+推送形如 `v1.3.1` 或 `v1.4.0-beta.1` 且与 `VERSION` 完全一致的标签，会触发 GitHub Actions：检查格式、静态检查和测试，构建 Windows 安装包、macOS Universal DMG 及对应 SHA-256 文件，并分别创建稳定版 GitHub Release 或 GitHub Pre-release。`main` 只能发布稳定版，`dev` 只能发布 Beta。普通用户不需要手动处理 SHA-256；稳定版应用内更新会自动完成校验。Beta 当前通过 Pre-release 页面手动安装，手动触发工作流只产出可下载的构建产物，不发布版本。
 
 自动化测试只使用内存假实现，不会启动、枚举、附加 UI Automation、读取草稿或向真实微信发送输入。真实微信兼容性只能由发布负责人依照人工验证清单完成。

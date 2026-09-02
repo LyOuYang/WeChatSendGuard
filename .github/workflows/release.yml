@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build (for example v1.3.0)
+        description: Existing stable or beta tag to build (for example v1.3.2-beta.1)
         required: true
         type: string
 
@@ -29,33 +29,57 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      source_branch: ${{ steps.release.outputs.source_branch }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
           fetch-depth: 0
-      - name: Validate tag, version, and main ancestry
+      - name: Validate tag, version, channel, and source branch
         id: release
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [[ "${{ github.event_name }}" != "push" ]]; then
-            tag="${{ inputs.tag }}"
+          tag="$RELEASE_TAG"
+
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            channel="beta"
+            source_branch="dev"
+            prerelease="true"
+          elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel="stable"
+            source_branch="main"
+            prerelease="false"
+          else
+            echo "Unsupported release tag: $tag" >&2
+            exit 1
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid release tag: $tag" >&2; exit 1; }
+
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "$tag" == "v$version" ]] || { echo "Tag $tag does not match VERSION $version" >&2; exit 1; }
           cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "wechat-send-guard") | .version')"
           [[ "$cargo_version" == "$version" ]] || { echo "Cargo version $cargo_version does not match VERSION $version" >&2; exit 1; }
-          git fetch origin main --no-tags
-          git merge-base --is-ancestor HEAD origin/main || { echo "Release tag must point to a commit on origin/main" >&2; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          git fetch origin --no-tags "+refs/heads/$source_branch:refs/remotes/origin/$source_branch"
+          git merge-base --is-ancestor HEAD "origin/$source_branch" || {
+            echo "Tag $tag must point to a commit on origin/$source_branch" >&2
+            exit 1
+          }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "source_branch=$source_branch"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Windows release package
+    name: Windows ${{ needs.validate.outputs.channel }} package
     runs-on: windows-2022
     needs: validate
     steps:
@@ -86,14 +110,14 @@ jobs:
       - name: Upload Windows release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ needs.validate.outputs.tag }}-windows-x64
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-windows-x64
           path: |
             dist/windows/*.exe
             dist/windows/*.exe.sha256
           if-no-files-found: error
 
   macos:
-    name: macOS release package (Ad-hoc)
+    name: macOS ${{ needs.validate.outputs.channel }} package (Ad-hoc)
     runs-on: macos-14
     needs: validate
     steps:
@@ -122,7 +146,7 @@ jobs:
       - name: Upload macOS release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ needs.validate.outputs.tag }}-macos-universal
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-macos-universal
           path: |
             dist/macos/*.dmg
             dist/macos/*.dmg.sha256
@@ -132,18 +156,20 @@ jobs:
     name: Publish unified GitHub Release
     runs-on: ubuntu-24.04
     needs: [validate, windows, macos]
+    environment:
+      name: ${{ needs.validate.outputs.channel == 'stable' && 'production' || 'beta' }}
     permissions:
       contents: write
     steps:
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-${{ needs.validate.outputs.tag }}-windows-x64
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-windows-x64
           path: dist/windows
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-${{ needs.validate.outputs.tag }}-macos-universal
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-macos-universal
           path: dist/macos
       - name: Validate release assets and checksums
         shell: bash
@@ -161,7 +187,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate.outputs.tag }}
-          name: WeChatSendGuard ${{ needs.validate.outputs.tag }}
+          name: WeChatSendGuard ${{ needs.validate.outputs.tag }}${{ needs.validate.outputs.channel == 'beta' && ' (Beta)' || '' }}
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.validate.outputs.channel == 'stable' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
