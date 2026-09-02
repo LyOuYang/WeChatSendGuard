@@ -133,6 +133,7 @@ struct Controller {
     provider: Arc<PlatformContextProvider>,
     audit: Arc<PlatformAuditLog>,
     startup: Option<PlatformStartupRegistration>,
+    temporary_pause_active: bool,
 }
 
 impl Controller {
@@ -150,11 +151,7 @@ impl Controller {
             .map_err(|error| format!("无法保存设置：{error}"))?;
 
         if observation_changed {
-            self.provider.configure_observation(
-                settings.enabled,
-                settings.intercept_keyboard_enter,
-                settings.intercept_send_button,
-            );
+            self.configure_observation_for(&settings);
         }
         #[cfg(windows)]
         if trusted_path_changed {
@@ -192,6 +189,8 @@ impl Controller {
             .save(settings.clone())
             .map_err(|error| format!("无法保存发送守护状态：{error}"))?;
 
+        self.service.resume_pause(SystemTime::now());
+        self.temporary_pause_active = false;
         self.provider.configure_observation(
             settings.enabled,
             settings.intercept_keyboard_enter,
@@ -200,6 +199,52 @@ impl Controller {
         self.service.update_settings(settings.clone());
         self.settings = settings;
         Ok(())
+    }
+
+    fn configure_observation(&self) {
+        self.configure_observation_for(&self.settings);
+    }
+
+    fn configure_observation_for(&self, settings: &AppSettings) {
+        if self.temporary_pause_active {
+            self.provider.configure_observation(false, false, false);
+        } else {
+            self.provider.configure_observation(
+                settings.enabled,
+                settings.intercept_keyboard_enter,
+                settings.intercept_send_button,
+            );
+        }
+    }
+
+    fn pause_protection(&mut self, minutes: u32, now: SystemTime) -> Result<(), String> {
+        if !self.settings.enabled {
+            return Err("发送守护当前未启用，无法设置暂停时间。".to_owned());
+        }
+        if !self.service.try_pause(minutes, now) {
+            return Err("暂停时间无效，请选择 1、5 或 15 分钟。".to_owned());
+        }
+        self.temporary_pause_active = true;
+        self.configure_observation();
+        Ok(())
+    }
+
+    fn resume_protection(&mut self, now: SystemTime) -> bool {
+        let was_paused = self.temporary_pause_active;
+        let resumed = self.service.resume_pause(now);
+        if was_paused || resumed {
+            self.temporary_pause_active = false;
+            self.configure_observation();
+            return true;
+        }
+        false
+    }
+
+    fn sync_temporary_pause(&mut self, now: SystemTime) {
+        if self.temporary_pause_active && self.service.expire_pause(now) {
+            self.temporary_pause_active = false;
+            self.configure_observation();
+        }
     }
 
     #[cfg(windows)]
@@ -375,12 +420,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         provider: provider.clone(),
         audit: audit.clone(),
         startup: PlatformStartupRegistration::for_current_executable().ok(),
+        temporary_pause_active: false,
     }));
 
     let main_window = AppWindow::new()?;
     let tray = AppTray::new()?;
     let update_state: UpdateStateSlot = Arc::new(std::sync::Mutex::new(UpdateState::default()));
     tray.set_protection_enabled(controller.borrow().settings.enabled);
+    tray.set_protection_paused(false);
     let active_confirmation: ActiveConfirmationSlot = Rc::new(RefCell::new(None));
     let about_slint: SlintAboutSlot = Rc::new(RefCell::new(None));
     let update_prompt: UpdatePromptSlot = Rc::new(RefCell::new(None));
@@ -399,6 +446,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         &tray,
         &main_window,
         Rc::clone(&controller),
+        Rc::clone(&active_confirmation),
         Rc::clone(&about_slint),
     );
     let status_timer = install_status_refresh(
@@ -453,7 +501,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
 
         #[cfg(target_os = "macos")]
-        if stroke.context_cache_dirty && !stroke.is_injected && !stroke.shift_pressed {
+        if stroke.context_cache_dirty
+            && !stroke.is_injected
+            && !stroke.shift_pressed
+            && !stroke.modifier_pressed
+        {
             if stroke.is_numpad_enter && !hook_service.settings().intercept_numpad_enter {
                 return false;
             }
@@ -475,6 +527,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 is_numpad_enter: stroke.is_numpad_enter,
                 is_injected: stroke.is_injected,
                 shift_pressed: stroke.shift_pressed,
+                modifier_pressed: stroke.modifier_pressed,
                 foreground_window: stroke.foreground_window,
             },
             now,
@@ -1469,6 +1522,7 @@ fn bind_tray_callbacks(
     tray: &AppTray,
     main_window: &AppWindow,
     controller: Rc<RefCell<Controller>>,
+    active_confirmation: ActiveConfirmationSlot,
     about_slint: SlintAboutSlot,
 ) {
     let main_window_weak = main_window.as_weak();
@@ -1514,6 +1568,66 @@ fn bind_tray_callbacks(
             }
         }
     });
+    tray.on_pause_requested({
+        let controller = Rc::clone(&controller);
+        let active_confirmation = Rc::clone(&active_confirmation);
+        let main_window_weak = main_window_weak.clone();
+        let tray_weak = tray_weak.clone();
+        move |minutes| {
+            if !matches!(minutes, 1 | 5 | 15) {
+                return;
+            }
+            if !controller.borrow().settings.enabled {
+                if let Some(window) = main_window_weak.upgrade() {
+                    show_and_restore_main_window(&window);
+                    set_save_status(&window, "发送守护当前未启用，无法设置暂停时间。", true);
+                }
+                return;
+            }
+
+            let service = controller.borrow().service.clone();
+            cancel_pending_confirmation(&active_confirmation, &service, &main_window_weak);
+            let result = controller
+                .borrow_mut()
+                .pause_protection(minutes as u32, SystemTime::now());
+            let succeeded = result.is_ok();
+            if let Some(window) = main_window_weak.upgrade() {
+                show_and_restore_main_window(&window);
+                match result {
+                    Ok(()) => {
+                        window.set_protection_paused(true);
+                        set_save_status(
+                            &window,
+                            format!("发送守护已暂停 {} 分钟，到期自动恢复", minutes),
+                            false,
+                        );
+                    }
+                    Err(error) => set_save_status(&window, error, true),
+                }
+            }
+            if succeeded && let Some(tray) = tray_weak.upgrade() {
+                tray.set_protection_paused(true);
+            }
+        }
+    });
+    tray.on_pause_resume_requested({
+        let controller = Rc::clone(&controller);
+        let main_window_weak = main_window_weak.clone();
+        let tray_weak = tray_weak.clone();
+        move || {
+            let resumed = controller.borrow_mut().resume_protection(SystemTime::now());
+            if let Some(tray) = tray_weak.upgrade()
+                && resumed
+            {
+                tray.set_protection_paused(false);
+            }
+            if resumed && let Some(window) = main_window_weak.upgrade() {
+                show_and_restore_main_window(&window);
+                window.set_protection_paused(false);
+                set_save_status(&window, "发送守护已恢复，立即生效", false);
+            }
+        }
+    });
     tray.on_protection_toggled({
         let controller = Rc::clone(&controller);
         let main_window_weak = main_window_weak.clone();
@@ -1528,9 +1642,16 @@ fn bind_tray_callbacks(
         move || {
             if let Some(window) = main_window_weak.upgrade() {
                 show_and_restore_main_window(&window);
-                let controller = controller.borrow();
-                let (status, _) =
-                    status_for_context(&controller.settings, &controller.provider.current());
+                let (status, _) = {
+                    let mut controller = controller.borrow_mut();
+                    let now = SystemTime::now();
+                    controller.sync_temporary_pause(now);
+                    status_for_context(
+                        &controller.settings,
+                        &controller.provider.current(),
+                        controller.service.pause_remaining(now),
+                    )
+                };
                 set_save_status(&window, status, false);
             }
         }
@@ -1570,9 +1691,11 @@ fn update_protection_enabled(
         Ok(()) => {
             if let Some(tray) = tray_weak.upgrade() {
                 tray.set_protection_enabled(enabled);
+                tray.set_protection_paused(false);
             }
             if let Some(window) = main_window_weak.upgrade() {
                 window.set_protection_enabled(enabled);
+                window.set_protection_paused(false);
                 let message = if window.get_has_unsaved_settings() {
                     if enabled {
                         "发送守护已启用，立即生效；其他更改尚未保存"
@@ -1702,16 +1825,26 @@ fn install_status_refresh(
     let tray_weak = tray.as_weak();
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, STATUS_POLL_INTERVAL, move || {
-        let settings = controller.borrow().settings.clone();
+        let now = SystemTime::now();
+        let (settings, pause_remaining) = {
+            let mut controller = controller.borrow_mut();
+            controller.sync_temporary_pause(now);
+            (
+                controller.settings.clone(),
+                controller.service.pause_remaining(now),
+            )
+        };
         let context = provider.current();
-        let (status, healthy) = status_for_context(&settings, &context);
+        let (status, healthy) = status_for_context(&settings, &context, pause_remaining);
         if let Some(window) = main_window_weak.upgrade() {
             window.set_status_text(status.clone().into());
             window.set_status_healthy(healthy);
+            window.set_protection_paused(pause_remaining.is_some());
         }
         if let Some(tray) = tray_weak.upgrade() {
             tray.set_status_text(status.into());
             tray.set_protection_enabled(settings.enabled);
+            tray.set_protection_paused(pause_remaining.is_some());
         }
     });
     timer
@@ -2570,7 +2703,17 @@ fn set_save_status(window: &AppWindow, message: impl Into<slint::SharedString>, 
     window.set_save_status_error(is_error);
 }
 
-fn status_for_context(settings: &AppSettings, context: &ChatContext) -> (String, bool) {
+fn status_for_context(
+    settings: &AppSettings,
+    context: &ChatContext,
+    pause_remaining: Option<Duration>,
+) -> (String, bool) {
+    if let Some(remaining) = pause_remaining {
+        return (
+            format!("状态：守护已暂停（{}）", pause_remaining_label(remaining)),
+            false,
+        );
+    }
     if !settings.enabled {
         return ("状态：守护已暂停".to_owned(), false);
     }
@@ -2601,6 +2744,15 @@ fn status_for_context(settings: &AppSettings, context: &ChatContext) -> (String,
         format!("（{title}）")
     };
     (format!("状态：等待消息输入框焦点{suffix}"), false)
+}
+
+fn pause_remaining_label(remaining: Duration) -> String {
+    let seconds = remaining.as_secs().max(1);
+    if seconds < 60 {
+        format!("剩余 {seconds} 秒")
+    } else {
+        format!("剩余 {} 分钟", seconds.div_ceil(60))
+    }
 }
 
 fn chat_matches_title(chat: &ProtectedChat, title: &str) -> bool {
@@ -2736,7 +2888,7 @@ mod tests {
     #[test]
     fn status_is_not_healthy_when_context_is_untrusted() {
         let (status, healthy) =
-            status_for_context(&AppSettings::default(), &ChatContext::default());
+            status_for_context(&AppSettings::default(), &ChatContext::default(), None);
         assert!(!healthy);
         assert!(status.contains("等待微信"));
     }

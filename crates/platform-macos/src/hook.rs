@@ -27,6 +27,7 @@ pub struct KeyboardStroke {
     pub is_numpad_enter: bool,
     pub is_injected: bool,
     pub shift_pressed: bool,
+    pub modifier_pressed: bool,
     pub foreground_window: isize,
     pub context_cache_dirty: bool,
 }
@@ -207,6 +208,7 @@ unsafe extern "C" fn keyboard_callback(
     key_code: u16,
     is_injected: bool,
     shift_pressed: bool,
+    modifier_pressed: bool,
     context: *mut c_void,
 ) -> bool {
     if context.is_null() {
@@ -220,6 +222,7 @@ unsafe extern "C" fn keyboard_callback(
             is_numpad_enter: false,
             is_injected,
             shift_pressed,
+            modifier_pressed,
             foreground_window: cached_foreground_window(),
             context_cache_dirty: native_context_cache_is_dirty(),
         },
@@ -228,6 +231,7 @@ unsafe extern "C" fn keyboard_callback(
             is_numpad_enter: true,
             is_injected,
             shift_pressed,
+            modifier_pressed,
             foreground_window: cached_foreground_window(),
             context_cache_dirty: native_context_cache_is_dirty(),
         },
@@ -236,6 +240,7 @@ unsafe extern "C" fn keyboard_callback(
             is_numpad_enter: false,
             is_injected,
             shift_pressed,
+            modifier_pressed,
             foreground_window: cached_foreground_window(),
             context_cache_dirty: native_context_cache_is_dirty(),
         },

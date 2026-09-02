@@ -739,9 +739,14 @@ static CGEventRef WSGInputTapCallback(
         }
         uint64_t eventMarker = (uint64_t)CGEventGetIntegerValueField(event, kCGEventSourceUserData);
         BOOL injected = eventMarker == tap.marker;
-        BOOL shift = (CGEventGetFlags(event) & kCGEventFlagMaskShift) != 0;
+        CGEventFlags flags = CGEventGetFlags(event);
+        BOOL shift = (flags & kCGEventFlagMaskShift) != 0;
+        BOOL modifier = (flags & (kCGEventFlagMaskShift |
+                                  kCGEventFlagMaskControl |
+                                  kCGEventFlagMaskAlternate |
+                                  kCGEventFlagMaskCommand)) != 0;
         BOOL suppress = tap.keyboardCallback != NULL &&
-                        tap.keyboardCallback(keyCode, injected, shift, tap.callbackContext);
+                        tap.keyboardCallback(keyCode, injected, shift, modifier, tap.callbackContext);
         if (suppress) {
             tap.suppressingRelease = YES;
             tap.suppressedCode = keyCode;

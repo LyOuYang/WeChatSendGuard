@@ -416,6 +416,7 @@ export component AppWindow inherits Window {
 
     in-out property <int> active-page: 0;
     in-out property <bool> protection-enabled: true;
+    in-out property <bool> protection-paused: false;
     in-out property <int> rule-mode: 0;
     in-out property <[ChatRow]> active-chats;
     in-out property <string> selected-chat-id: "";
@@ -581,7 +582,7 @@ export component AppWindow inherits Window {
                         width: 14px;
                         height: 14px;
                         border-radius: 7px;
-                        background: !root.protection-enabled ? #94a3b825 : (root.status-healthy ? #07c16025 : #f59e0b25);
+                        background: (!root.protection-enabled || root.protection-paused) ? #94a3b825 : (root.status-healthy ? #07c16025 : #f59e0b25);
                     }
                     Rectangle {
                         x: 13px;
@@ -589,7 +590,7 @@ export component AppWindow inherits Window {
                         width: 8px;
                         height: 8px;
                         border-radius: 4px;
-                        background: !root.protection-enabled ? #94a3b8 : (root.status-healthy ? #07c160 : #f59e0b);
+                        background: (!root.protection-enabled || root.protection-paused) ? #94a3b8 : (root.status-healthy ? #07c160 : #f59e0b);
                     }
                     Text {
                         x: 30px;
@@ -1474,15 +1475,18 @@ export component ConfirmationWindow inherits Window {
 }
 
 export component AppTray inherits SystemTrayIcon {
-    icon: root.protection-enabled ? @image-url("../assets/tray-active.svg") : @image-url("../assets/tray-inactive.svg");
+    icon: root.protection-enabled && !root.protection-paused ? @image-url("../assets/tray-active.svg") : @image-url("../assets/tray-inactive.svg");
     tooltip: root.status-text;
     title: "WeChatSendGuard";
 
     in-out property <string> status-text: "状态：正在检测微信";
     in-out property <bool> protection-enabled: true;
+    in-out property <bool> protection-paused: false;
     callback open-settings();
     callback add-current-chat();
     callback bypass-requested(int);
+    callback pause-requested(int);
+    callback pause-resume-requested();
     callback protection-toggled(bool);
     callback show-status();
     callback about-slint-requested();
@@ -1497,18 +1501,32 @@ export component AppTray inherits SystemTrayIcon {
         MenuItem { title: "加入当前微信会话"; activated => { root.add-current-chat(); } }
         Menu {
             title: "临时放行当前会话";
+            enabled: root.protection-enabled && !root.protection-paused;
             MenuItem { title: "临时放行 1 分钟"; activated => { root.bypass-requested(1); } }
             MenuItem { title: "临时放行 5 分钟"; activated => { root.bypass-requested(5); } }
             MenuItem { title: "临时放行 15 分钟"; activated => { root.bypass-requested(15); } }
         }
+        Menu {
+            title: "暂停发送守护";
+            enabled: root.protection-enabled;
+            MenuItem { title: "暂停 1 分钟"; activated => { root.pause-requested(1); } }
+            MenuItem { title: "暂停 5 分钟"; activated => { root.pause-requested(5); } }
+            MenuItem { title: "暂停 15 分钟"; activated => { root.pause-requested(15); } }
+        }
         MenuSeparator { }
         MenuItem {
-            title: root.protection-enabled ? "发送守护：已启用" : "发送守护：已暂停";
+            title: root.protection-paused ? "发送守护：临时暂停" : (root.protection-enabled ? "发送守护：已启用" : "发送守护：已关闭");
             enabled: false;
         }
         MenuItem {
-            title: root.protection-enabled ? "暂停发送守护" : "启用发送守护";
-            activated => { root.protection-toggled(!root.protection-enabled); }
+            title: root.protection-paused ? "立即恢复发送守护" : (root.protection-enabled ? "关闭发送守护" : "启用发送守护");
+            activated => {
+                if root.protection-paused {
+                    root.pause-resume-requested();
+                } else {
+                    root.protection-toggled(!root.protection-enabled);
+                }
+            }
         }
         MenuItem { title: "查看当前状态"; activated => { root.show-status(); } }
         MenuItem { title: "关于 Slint"; activated => { root.about-slint-requested(); } }

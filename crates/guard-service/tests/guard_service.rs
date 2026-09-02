@@ -33,6 +33,7 @@ fn physical_enter() -> PhysicalEnter {
         is_numpad_enter: false,
         is_injected: false,
         shift_pressed: false,
+        modifier_pressed: false,
         foreground_window: 42,
     }
 }
@@ -256,6 +257,7 @@ fn shift_and_injected_events_always_pass_through_in_safe_tests() {
         service.handle_physical_enter(
             PhysicalEnter {
                 shift_pressed: true,
+                modifier_pressed: true,
                 ..physical_enter()
             },
             fixed_now()
@@ -271,6 +273,126 @@ fn shift_and_injected_events_always_pass_through_in_safe_tests() {
             fixed_now()
         ),
         EnterHandling::PassThrough
+    );
+}
+
+#[test]
+fn modified_enter_events_always_pass_through_in_protected_chats() {
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    assert_eq!(
+        service.handle_physical_enter(
+            PhysicalEnter {
+                modifier_pressed: true,
+                ..physical_enter()
+            },
+            fixed_now()
+        ),
+        EnterHandling::PassThrough
+    );
+}
+
+#[test]
+fn temporary_pause_passes_all_send_paths_then_expires() {
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    let start = fixed_now();
+
+    assert!(service.try_pause(5, start));
+    assert!(
+        service
+            .pause_remaining(start + Duration::from_secs(299))
+            .is_some()
+    );
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(1)),
+        EnterHandling::PassThrough
+    );
+    assert_eq!(
+        service.handle_send_button_click(42, start + Duration::from_secs(1)),
+        EnterHandling::PassThrough
+    );
+    assert!(
+        service
+            .pause_remaining(start + Duration::from_secs(300))
+            .is_none()
+    );
+    assert!(matches!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(300)),
+        EnterHandling::SuppressAndConfirm(_)
+    ));
+}
+
+#[test]
+fn temporary_pause_cancels_an_active_confirmation_and_rejects_late_confirmation() {
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+    let injector = Arc::new(RecordingInputInjector::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        platform,
+        injector.clone(),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    let start = fixed_now();
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_physical_enter(physical_enter(), start)
+    else {
+        panic!("protected physical enter should request confirmation");
+    };
+
+    assert!(service.try_pause(1, start));
+    assert!(service.current_pending_confirmation().is_none());
+    assert!(matches!(
+        service.complete_confirmation(
+            &pending,
+            ConfirmationOutcome::Confirmed,
+            start + Duration::from_secs(1),
+        ),
+        CompletionResult::NotInjected { .. }
+    ));
+    assert!(injector.sent().is_empty());
+}
+
+#[test]
+fn temporary_pause_rejects_unknown_duration_without_changing_state() {
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(protected_context("工作群"))),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    assert!(!service.try_pause(2, fixed_now()));
+    assert!(service.pause_remaining(fixed_now()).is_none());
+}
+
+#[test]
+fn temporary_bypass_is_unavailable_while_protection_is_paused() {
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(protected_context("工作群"))),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    let start = fixed_now();
+
+    assert!(service.try_pause(1, start));
+    assert!(service.try_grant_current_bypass(1, start).is_none());
+    assert!(
+        service
+            .try_grant_current_bypass(1, start + Duration::from_secs(61))
+            .is_some()
     );
 }
 
