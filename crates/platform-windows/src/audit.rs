@@ -281,6 +281,13 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "trustedWeixinIdentity"
             | "releaseVersion"
             | "checkMode"
+            | "contextSource"
+            | "requestedMinutes"
+            | "ruleMode"
+            | "protectionEnabled"
+            | "knownChat"
+            | "chatTargetKind"
+            | "decisionKind"
             | "observationId"
             | "diagnosticWindowMatchesContext"
             | "foregroundProcessId"
@@ -328,6 +335,7 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "contextCompatibilityAvailable"
             | "contextGeneration"
             | "contextAgeMilliseconds"
+            | "contextMaximumAgeMilliseconds"
     ) && value.len() <= 256
         && !value.contains(['\r', '\n'])
 }
@@ -485,6 +493,17 @@ mod tests {
         .with_trace_id(Uuid::nil());
         entry.details = BTreeMap::from([
             ("source".to_owned(), "enter".to_owned()),
+            ("contextSource".to_owned(), "provided-context".to_owned()),
+            ("requestedMinutes".to_owned(), "5".to_owned()),
+            ("ruleMode".to_owned(), "confirm-unless-excluded".to_owned()),
+            ("protectionEnabled".to_owned(), "true".to_owned()),
+            ("knownChat".to_owned(), "true".to_owned()),
+            ("chatTargetKind".to_owned(), "group".to_owned()),
+            ("decisionKind".to_owned(), "confirm-unlisted".to_owned()),
+            (
+                "contextMaximumAgeMilliseconds".to_owned(),
+                "5000".to_owned(),
+            ),
             ("uiaTreeQueryStatus".to_owned(), "query-failed".to_owned()),
             (
                 "uiaTreeErrorCode".to_owned(),
@@ -506,6 +525,14 @@ mod tests {
         assert!(serialized.contains("timestampUnixMilliseconds"));
         assert!(serialized.contains("traceId"));
         assert!(serialized.contains("source"));
+        assert!(serialized.contains("contextSource"));
+        assert!(serialized.contains("requestedMinutes"));
+        assert!(serialized.contains("ruleMode"));
+        assert!(serialized.contains("protectionEnabled"));
+        assert!(serialized.contains("knownChat"));
+        assert!(serialized.contains("chatTargetKind"));
+        assert!(serialized.contains("decisionKind"));
+        assert!(serialized.contains("contextMaximumAgeMilliseconds"));
         assert!(serialized.contains("uiaTreeQueryStatus"));
         assert!(serialized.contains("uia-tree-query-failed:0x80040201"));
         assert!(!serialized.contains("chatTitle"));

@@ -114,7 +114,7 @@ pub fn evaluate_protection(
         let exemption = settings.exempted_chats.iter().find(|chat| {
             chat.enabled && chat.target_kind == target_kind && title_matches(chat, &title)
         });
-        return if exemption.is_some() {
+        return if exemption.is_some() || bypasses.is_active_for_context(context, now) {
             ProtectionDecision::pass()
         } else {
             ProtectionDecision {
@@ -154,44 +154,104 @@ fn unknown_context_decision(settings: &AppSettings) -> ProtectionDecision {
 
 #[derive(Debug, Default)]
 pub struct TemporaryBypassRegistry {
-    entries: Mutex<HashMap<Uuid, SystemTime>>,
+    entries: Mutex<HashMap<TemporaryBypassKey, SystemTime>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TemporaryBypassKey {
+    ProtectedChat(Uuid),
+    CurrentContext {
+        window_handle: isize,
+        process_id: u32,
+        target_kind: ChatTargetKind,
+        normalized_title: String,
+    },
 }
 
 impl TemporaryBypassRegistry {
     pub fn grant(&self, protected_chat_id: Uuid, duration: Duration, now: SystemTime) {
+        self.grant_key(
+            TemporaryBypassKey::ProtectedChat(protected_chat_id),
+            duration,
+            now,
+        );
+    }
+
+    pub fn grant_for_context(&self, context: &ChatContext, duration: Duration, now: SystemTime) {
+        if let Some(key) = current_context_key(context) {
+            self.grant_key(key, duration, now);
+        }
+    }
+
+    fn grant_key(&self, key: TemporaryBypassKey, duration: Duration, now: SystemTime) {
         assert!(
             duration > Duration::ZERO,
             "temporary bypass duration must be positive"
         );
         let mut entries = lock_unpoisoned(&self.entries);
-        entries.insert(protected_chat_id, now + duration);
+        entries.insert(key, now + duration);
     }
 
     pub fn is_active(&self, protected_chat_id: Uuid, now: SystemTime) -> bool {
+        self.active_expiry(&TemporaryBypassKey::ProtectedChat(protected_chat_id), now)
+            .is_some()
+    }
+
+    pub fn is_active_for_context(&self, context: &ChatContext, now: SystemTime) -> bool {
+        current_context_key(context)
+            .as_ref()
+            .is_some_and(|key| self.active_expiry(key, now).is_some())
+    }
+
+    pub fn remaining(&self, protected_chat_id: Uuid, now: SystemTime) -> Option<Duration> {
+        self.active_expiry(&TemporaryBypassKey::ProtectedChat(protected_chat_id), now)
+            .and_then(|expires_at| expires_at.duration_since(now).ok())
+    }
+
+    pub fn remaining_for_context(
+        &self,
+        context: &ChatContext,
+        now: SystemTime,
+    ) -> Option<Duration> {
+        current_context_key(context)
+            .as_ref()
+            .and_then(|key| self.active_expiry(key, now))
+            .and_then(|expires_at| expires_at.duration_since(now).ok())
+    }
+
+    fn active_expiry(&self, key: &TemporaryBypassKey, now: SystemTime) -> Option<SystemTime> {
         let mut entries = lock_unpoisoned(&self.entries);
-        let Some(expires_at) = entries.get(&protected_chat_id).copied() else {
-            return false;
-        };
+        let expires_at = entries.get(key).copied()?;
         if expires_at > now {
-            return true;
+            return Some(expires_at);
         }
-        entries.remove(&protected_chat_id);
-        false
+        entries.remove(key);
+        None
     }
 
     pub fn expiry(&self, protected_chat_id: Uuid, now: SystemTime) -> Option<SystemTime> {
-        if self.is_active(protected_chat_id, now) {
-            lock_unpoisoned(&self.entries)
-                .get(&protected_chat_id)
-                .copied()
-        } else {
-            None
-        }
+        self.active_expiry(&TemporaryBypassKey::ProtectedChat(protected_chat_id), now)
     }
 
     pub fn clear(&self, protected_chat_id: Uuid) {
-        lock_unpoisoned(&self.entries).remove(&protected_chat_id);
+        lock_unpoisoned(&self.entries)
+            .remove(&TemporaryBypassKey::ProtectedChat(protected_chat_id));
     }
+}
+
+fn current_context_key(context: &ChatContext) -> Option<TemporaryBypassKey> {
+    let target_kind = context.target_kind()?;
+    let normalized_title = context.normalized_chat_title();
+    if normalized_title.is_empty() {
+        return None;
+    }
+
+    Some(TemporaryBypassKey::CurrentContext {
+        window_handle: context.window_handle,
+        process_id: context.process_id,
+        target_kind,
+        normalized_title,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

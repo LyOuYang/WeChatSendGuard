@@ -9,8 +9,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 use wechat_send_guard_core::{
-    AppSettings, AuditEntry, ChatContext, ConfirmationOutcome, PendingConfirmation, ProtectedChat,
-    ProtectionDecisionKind, SendGuardStateMachine, TemporaryBypassRegistry, evaluate_protection,
+    AppSettings, AuditEntry, ChatContext, ChatTargetKind, ConfirmationOutcome, PendingConfirmation,
+    ProtectionDecisionKind, RuleMode, SendGuardStateMachine, TemporaryBypassRegistry,
+    evaluate_protection, title_matches,
 };
 use wechat_send_guard_platform_api::{AuditLog, InputInjector, SendTargetPlatform};
 
@@ -20,6 +21,10 @@ use wechat_send_guard_platform_api::{AuditLog, InputInjector, SendTargetPlatform
 /// revalidated before injection.
 const MAX_CONTEXT_AGE: Duration = Duration::from_millis(2_500);
 const MAX_CONTEXT_FUTURE_LEAD: Duration = Duration::from_secs(10);
+/// A tray action may briefly move focus away from Weixin before the click callback runs. The
+/// remembered context remains safe for this bounded interval because the resulting bypass is
+/// still keyed to the exact window, process, target kind, and normalized chat title.
+pub const TEMPORARY_BYPASS_CONTEXT_MAX_AGE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalEnter {
@@ -45,6 +50,38 @@ pub enum CompletionResult {
     Injected,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemporaryBypassGrant {
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporaryBypassRejection {
+    InvalidDuration,
+    ProtectionDisabled,
+    ProtectionPaused,
+    ContextStale,
+    ContextUntrusted,
+    ContextIncomplete,
+    EditorUnfocused,
+    ProtectedChatMissing,
+    NoProtectionRequired,
+    UnknownContext,
+    BlockedUnknownContext,
+}
+
+struct BypassAuditRecord<'a> {
+    protected_chat_id: Option<uuid::Uuid>,
+    trace_id: uuid::Uuid,
+    result: &'a str,
+    requested_minutes: u32,
+    settings: &'a AppSettings,
+    context: &'a ChatContext,
+    context_source: &'a str,
+    decision: Option<ProtectionDecisionKind>,
+    timestamp: SystemTime,
+}
+
 /// The only path from a physical key decision to a synthetic send request.
 pub struct GuardService {
     settings: RwLock<AppSettings>,
@@ -58,6 +95,8 @@ pub struct GuardService {
 }
 
 impl GuardService {
+    /// Temporary bypasses and pauses intentionally start empty on every service construction.
+    /// They are runtime-only permissions and must never be restored from persisted settings.
     pub fn new(
         settings: AppSettings,
         platform: Arc<dyn SendTargetPlatform>,
@@ -593,36 +632,179 @@ impl GuardService {
         true
     }
 
-    pub fn try_grant_current_bypass(&self, minutes: u32, now: SystemTime) -> Option<ProtectedChat> {
-        if !is_temporary_duration(minutes) || self.is_paused(now) {
-            return None;
-        }
+    pub fn try_grant_current_bypass(
+        &self,
+        minutes: u32,
+        now: SystemTime,
+    ) -> Result<TemporaryBypassGrant, TemporaryBypassRejection> {
         let context = self.platform.current();
-        let decision = evaluate_protection(&context, &self.settings(), &self.bypasses, now);
-        let protected_chat = decision.protected_chat?;
-        if decision.kind != ProtectionDecisionKind::ConfirmProtected {
+        self.try_grant_bypass_for_context_with_source(context, minutes, now, "foreground-snapshot")
+    }
+
+    pub fn try_grant_bypass_for_context(
+        &self,
+        context: ChatContext,
+        minutes: u32,
+        now: SystemTime,
+    ) -> Result<TemporaryBypassGrant, TemporaryBypassRejection> {
+        self.try_grant_bypass_for_context_with_source(context, minutes, now, "provided-context")
+    }
+
+    /// Returns the remaining runtime-only bypass for the currently recognized chat, if any.
+    /// The lookup is scoped to the same identity used by the send decision and is never backed by
+    /// persisted settings.
+    pub fn temporary_bypass_remaining_for_context(
+        &self,
+        context: &ChatContext,
+        now: SystemTime,
+    ) -> Option<Duration> {
+        if context.requires_elevation
+            || !context.is_trusted_weixin
+            || !context.is_compatibility_available
+            || !context.is_known_chat()
+        {
             return None;
         }
 
-        self.bypasses.grant(
-            protected_chat.id,
-            Duration::from_secs(u64::from(minutes) * 60),
-            now,
+        let settings = self.settings();
+        if !settings.enabled {
+            return None;
+        }
+        match settings.rule_mode {
+            RuleMode::ConfirmUnlessExcluded => self.bypasses.remaining_for_context(context, now),
+            RuleMode::ProtectListed => {
+                let target_kind = context.target_kind()?;
+                let title = context.normalized_chat_title();
+                settings
+                    .protected_chats
+                    .iter()
+                    .find(|chat| {
+                        chat.enabled
+                            && chat.target_kind == target_kind
+                            && title_matches(chat, &title)
+                    })
+                    .and_then(|chat| self.bypasses.remaining(chat.id, now))
+            }
+        }
+    }
+
+    fn try_grant_bypass_for_context_with_source(
+        &self,
+        context: ChatContext,
+        minutes: u32,
+        now: SystemTime,
+        context_source: &str,
+    ) -> Result<TemporaryBypassGrant, TemporaryBypassRejection> {
+        let trace_id = uuid::Uuid::new_v4();
+        let settings = self.settings();
+        let audit_bypass = |protected_chat_id, result, decision| {
+            self.write_bypass_audit(BypassAuditRecord {
+                protected_chat_id,
+                trace_id,
+                result,
+                requested_minutes: minutes,
+                settings: &settings,
+                context: &context,
+                context_source,
+                decision,
+                timestamp: now,
+            });
+        };
+        if !is_temporary_duration(minutes) {
+            audit_bypass(None, "rejected-invalid-duration", None);
+            return Err(TemporaryBypassRejection::InvalidDuration);
+        }
+        if !settings.enabled {
+            audit_bypass(None, "rejected-protection-disabled", None);
+            return Err(TemporaryBypassRejection::ProtectionDisabled);
+        }
+        if self.is_paused(now) {
+            audit_bypass(None, "rejected-protection-paused", None);
+            return Err(TemporaryBypassRejection::ProtectionPaused);
+        }
+        if context_exceeds_maximum_age(&context, now, TEMPORARY_BYPASS_CONTEXT_MAX_AGE) {
+            audit_bypass(None, "rejected-context-stale", None);
+            return Err(TemporaryBypassRejection::ContextStale);
+        }
+        if !context.is_trusted_weixin {
+            audit_bypass(None, "rejected-context-untrusted", None);
+            return Err(TemporaryBypassRejection::ContextUntrusted);
+        }
+        if !context.is_compatibility_available {
+            audit_bypass(None, "rejected-context-incomplete", None);
+            return Err(TemporaryBypassRejection::ContextIncomplete);
+        }
+        if !context.is_message_editor_focused {
+            audit_bypass(None, "rejected-editor-unfocused", None);
+            return Err(TemporaryBypassRejection::EditorUnfocused);
+        }
+
+        let decision = evaluate_protection(&context, &settings, &self.bypasses, now);
+        let duration = Duration::from_secs(u64::from(minutes) * 60);
+        let (display_name, protected_chat_id) = match decision.kind {
+            ProtectionDecisionKind::ConfirmProtected => {
+                let Some(protected_chat) = decision.protected_chat else {
+                    audit_bypass(None, "rejected-protected-chat-missing", Some(decision.kind));
+                    return Err(TemporaryBypassRejection::ProtectedChatMissing);
+                };
+                self.bypasses.grant(protected_chat.id, duration, now);
+                (protected_chat.display_name, Some(protected_chat.id))
+            }
+            ProtectionDecisionKind::ConfirmUnlisted => {
+                let title = context.normalized_chat_title();
+                self.bypasses.grant_for_context(&context, duration, now);
+                (title, None)
+            }
+            ProtectionDecisionKind::Pass => {
+                audit_bypass(None, "rejected-no-protection-required", Some(decision.kind));
+                return Err(TemporaryBypassRejection::NoProtectionRequired);
+            }
+            ProtectionDecisionKind::ConfirmUnknown => {
+                audit_bypass(None, "rejected-unknown-context", Some(decision.kind));
+                return Err(TemporaryBypassRejection::UnknownContext);
+            }
+            ProtectionDecisionKind::BlockUnknown => {
+                audit_bypass(
+                    None,
+                    "rejected-blocked-unknown-context",
+                    Some(decision.kind),
+                );
+                return Err(TemporaryBypassRejection::BlockedUnknownContext);
+            }
+        };
+        audit_bypass(
+            protected_chat_id,
+            &format!("granted-{minutes}m"),
+            Some(decision.kind),
         );
-        self.write_audit(
-            Some(protected_chat.id),
-            None,
-            "temporary-bypass",
-            format!("granted-{minutes}m"),
-            now,
-        );
-        Some(protected_chat)
+        Ok(TemporaryBypassGrant { display_name })
     }
 
     /// Temporarily disables all send protection without changing the persisted setting. The
     /// caller is responsible for disabling platform observation while this state is active.
     pub fn try_pause(&self, minutes: u32, now: SystemTime) -> bool {
-        if !is_temporary_duration(minutes) || !self.settings().enabled {
+        let trace_id = uuid::Uuid::new_v4();
+        let settings = self.settings();
+        if !is_temporary_duration(minutes) {
+            self.write_pause_audit(
+                trace_id,
+                "rejected-invalid-duration",
+                "tray-pause",
+                Some(minutes),
+                &settings,
+                now,
+            );
+            return false;
+        }
+        if !settings.enabled {
+            self.write_pause_audit(
+                trace_id,
+                "rejected-protection-disabled",
+                "tray-pause",
+                Some(minutes),
+                &settings,
+                now,
+            );
             return false;
         }
 
@@ -639,11 +821,12 @@ impl GuardService {
                 now,
             );
         }
-        self.write_audit(
-            None,
-            None,
-            "protection-pause",
-            format!("granted-{minutes}m"),
+        self.write_pause_audit(
+            trace_id,
+            &format!("granted-{minutes}m"),
+            "tray-pause",
+            Some(minutes),
+            &settings,
             now,
         );
         true
@@ -661,7 +844,15 @@ impl GuardService {
         let expires_at = lock_unpoisoned(&self.pause_until).take();
         let was_active = expires_at.is_some_and(|expires_at| expires_at > now);
         if was_active {
-            self.write_audit(None, None, "protection-pause", "resumed-manual", now);
+            let settings = self.settings();
+            self.write_pause_audit(
+                uuid::Uuid::new_v4(),
+                "resumed-manual",
+                "tray-pause-resume",
+                None,
+                &settings,
+                now,
+            );
         }
         was_active
     }
@@ -671,7 +862,18 @@ impl GuardService {
         let expired = pause_until.is_some_and(|expires_at| expires_at <= now);
         if expired {
             *pause_until = None;
-            self.write_audit(None, None, "protection-pause", "resumed-timeout", now);
+        }
+        drop(pause_until);
+        if expired {
+            let settings = self.settings();
+            self.write_pause_audit(
+                uuid::Uuid::new_v4(),
+                "resumed-timeout",
+                "pause-expiry",
+                None,
+                &settings,
+                now,
+            );
         }
         expired
     }
@@ -734,6 +936,99 @@ impl GuardService {
                 .with_details(details),
         );
     }
+
+    fn write_bypass_audit(&self, record: BypassAuditRecord<'_>) {
+        let BypassAuditRecord {
+            protected_chat_id,
+            trace_id,
+            result,
+            requested_minutes,
+            settings,
+            context,
+            context_source,
+            decision,
+            timestamp,
+        } = record;
+        let mut details = std::collections::BTreeMap::from([
+            ("source".to_owned(), "tray-bypass".to_owned()),
+            ("contextSource".to_owned(), context_source.to_owned()),
+            ("requestedMinutes".to_owned(), requested_minutes.to_string()),
+            (
+                "ruleMode".to_owned(),
+                rule_mode_audit_label(settings.rule_mode).to_owned(),
+            ),
+            ("protectionEnabled".to_owned(), settings.enabled.to_string()),
+            (
+                "trustedWeixin".to_owned(),
+                context.is_trusted_weixin.to_string(),
+            ),
+            (
+                "contextCompatibilityAvailable".to_owned(),
+                context.is_compatibility_available.to_string(),
+            ),
+            (
+                "contextMaximumAgeMilliseconds".to_owned(),
+                TEMPORARY_BYPASS_CONTEXT_MAX_AGE.as_millis().to_string(),
+            ),
+            (
+                "editorFocused".to_owned(),
+                context.is_message_editor_focused.to_string(),
+            ),
+            ("knownChat".to_owned(), context.is_known_chat().to_string()),
+        ]);
+        if let Some(target_kind) = context.target_kind() {
+            details.insert(
+                "chatTargetKind".to_owned(),
+                target_kind_audit_label(target_kind).to_owned(),
+            );
+        }
+        if let Some(decision) = decision {
+            details.insert(
+                "decisionKind".to_owned(),
+                decision_audit_label(decision).to_owned(),
+            );
+        }
+        if let Some(observed_at) = context.observed_at
+            && let Ok(age) = timestamp.duration_since(observed_at)
+        {
+            details.insert(
+                "contextAgeMilliseconds".to_owned(),
+                age.as_millis().to_string(),
+            );
+        }
+        self.audit_log.write(
+            AuditEntry::new(timestamp, protected_chat_id, "temporary-bypass", result)
+                .with_trace_id(trace_id)
+                .with_details(details),
+        );
+    }
+
+    fn write_pause_audit(
+        &self,
+        trace_id: uuid::Uuid,
+        result: &str,
+        source: &str,
+        requested_minutes: Option<u32>,
+        settings: &AppSettings,
+        timestamp: SystemTime,
+    ) {
+        let mut details = std::collections::BTreeMap::from([
+            ("source".to_owned(), source.to_owned()),
+            (
+                "ruleMode".to_owned(),
+                rule_mode_audit_label(settings.rule_mode).to_owned(),
+            ),
+            ("protectionEnabled".to_owned(), settings.enabled.to_string()),
+        ]);
+        if let Some(requested_minutes) = requested_minutes {
+            details.insert("requestedMinutes".to_owned(), requested_minutes.to_string());
+        }
+        self.audit_log.write(
+            AuditEntry::new(timestamp, None, "protection-pause", result)
+                .with_trace_id(trace_id)
+                .with_details(details),
+        );
+    }
 }
 
 struct ConfirmationRequest<'a> {
@@ -747,6 +1042,14 @@ struct ConfirmationRequest<'a> {
 }
 
 fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
+    context_exceeds_maximum_age(context, now, MAX_CONTEXT_AGE)
+}
+
+fn context_exceeds_maximum_age(
+    context: &ChatContext,
+    now: SystemTime,
+    maximum_age: Duration,
+) -> bool {
     let Some(observed_at) = context.observed_at else {
         // Test doubles and future platforms without a cache timestamp remain usable. Production
         // Windows contexts always carry a timestamp from the foreground monitor.
@@ -754,7 +1057,7 @@ fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
     };
 
     match now.duration_since(observed_at) {
-        Ok(age) => age > MAX_CONTEXT_AGE,
+        Ok(age) => age > maximum_age,
         // Confirmation captures `now` before the synchronous platform revalidation. A successful
         // refresh can therefore carry an observation timestamp a few milliseconds later than
         // `now`; that is fresher, not stale.
@@ -764,6 +1067,30 @@ fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
 
 fn is_temporary_duration(minutes: u32) -> bool {
     matches!(minutes, 1 | 5 | 15)
+}
+
+const fn rule_mode_audit_label(mode: RuleMode) -> &'static str {
+    match mode {
+        RuleMode::ProtectListed => "protect-listed",
+        RuleMode::ConfirmUnlessExcluded => "confirm-unless-excluded",
+    }
+}
+
+const fn target_kind_audit_label(kind: ChatTargetKind) -> &'static str {
+    match kind {
+        ChatTargetKind::Group => "group",
+        ChatTargetKind::Contact => "contact",
+    }
+}
+
+const fn decision_audit_label(kind: ProtectionDecisionKind) -> &'static str {
+    match kind {
+        ProtectionDecisionKind::Pass => "pass",
+        ProtectionDecisionKind::ConfirmProtected => "confirm-protected",
+        ProtectionDecisionKind::ConfirmUnlisted => "confirm-unlisted",
+        ProtectionDecisionKind::ConfirmUnknown => "confirm-unknown",
+        ProtectionDecisionKind::BlockUnknown => "block-unknown",
+    }
 }
 
 fn outcome_name(outcome: ConfirmationOutcome) -> &'static str {

@@ -2,7 +2,7 @@
 
 ## 目的与边界
 
-本文定义 macOS 实现及未来 Linux 适配必须与 Windows `1.2.0` 保持一致的产品行为，以及平台代码应落在什么边界。macOS 的具体实现和发布状态见 [macOS 适配说明](macos-adaptation.md)。
+本文定义 macOS 实现及未来 Linux 适配必须与 Windows 保持一致的产品行为，以及平台代码应落在什么边界。macOS 的具体实现和发布状态见 [macOS 适配说明](macos-adaptation.md)。
 
 各平台必须使用独立平台包并由组合根按目标系统装配。不得在 `guard-core`、`guard-service` 或 `desktop-ui` 中加入条件编译来调用某个操作系统 API。
 
@@ -43,7 +43,7 @@
 
 ## 设置兼容性
 
-公共设置字段、名单语义、确认规则和审计字段应继续保持 `schemaVersion: 2` 的兼容读写，直到有经过记录的迁移才升级架构版本。Windows `trustedWeixinExecutablePath` 是 Windows 适配器拥有的可选覆盖字段：缺失时由 Windows 使用自己的默认路径；其他平台必须忽略它，不能将其解释为本平台的信任身份。
+公共设置字段、名单语义、确认规则和审计字段应保持当前配置架构的兼容读写，直到有经过记录的迁移才升级架构版本。Windows `trustedWeixinExecutablePath` 是 Windows 适配器拥有的可选识别字段：缺失时由 Windows 自动识别正在运行的唯一微信实例；其他平台必须忽略它，不能将其解释为本平台的信任身份。
 
 新的平台专用设置应由该平台适配器拥有，并在新增前明确说明：默认值、持久化字段、用户可编辑范围、身份安全影响、从旧设置升级与回退策略。不要让平台专用字段改变 `guard-core` 的规则含义。
 

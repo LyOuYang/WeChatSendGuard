@@ -36,6 +36,12 @@ Use `rustfmt` defaults (four spaces) and keep Clippy warning-free. Follow existi
 
 Place unit tests beside code and integration tests under each crate's `tests/` directory; store stable JSON samples in `tests/fixtures/`. Automated tests must use the in-memory platform doubles. Never start WeChat, enumerate its windows, attach UI Automation, inject input, use accounts, access the network, or read real drafts. Real-client compatibility is a manual release check; follow `docs/manual-wechat-validation.md`.
 
+## Logging and Diagnostics
+
+Every user-facing workflow, state transition, platform recognition decision, and failure or early-return path must emit a structured audit entry with a stable `eventType` and `result`. Include an opaque `traceId` for actions that may need to be correlated, plus the smallest content-free state needed to distinguish configuration, context, timing, and platform failures. When investigating a user report, inspect the actual logs first, correlate version, `sessionId`, `processId`, `traceId`, and timestamps, and do not rely on code-path guesses alone.
+
+Logs must never contain message text, draft text, chat titles, clipboard data, screenshots, or full user paths. New diagnostic fields must be added to the platform audit allow-list and covered by tests so useful state is retained without weakening the privacy boundary. Add automated assertions for the important success, rejection, expiry, and recovery log branches of each new workflow.
+
 ## Commits & Pull Requests
 
 Recent commits use short, focused Chinese summaries, sometimes with a `fix` prefix (for example, `fix：无法获取微信联系人bug`). Keep that concise style and make each commit one logical change. Pull requests should explain the behavioral and security impact, list validation commands run, link relevant issues, and include screenshots for Slint UI changes. Flag changes to settings schemas, trusted executable handling, keyboard interception, or audit data for explicit review.

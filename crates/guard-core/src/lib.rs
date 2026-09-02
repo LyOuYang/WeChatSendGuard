@@ -17,5 +17,5 @@ pub use config::{
 pub use guard::{
     ChatContext, ConfirmationOutcome, ConfirmationResolution, PendingConfirmation,
     ProtectionDecision, ProtectionDecisionKind, SendGuardStateMachine, TemporaryBypassRegistry,
-    evaluate_protection,
+    evaluate_protection, title_matches,
 };

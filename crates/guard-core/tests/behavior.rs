@@ -237,10 +237,57 @@ fn bypass_expires() {
     let id = Uuid::new_v4();
     registry.grant(id, Duration::from_secs(60), fixed_now());
     assert!(registry.is_active(id, fixed_now() + Duration::from_secs(30)));
+    assert_eq!(
+        registry.remaining(id, fixed_now() + Duration::from_secs(30)),
+        Some(Duration::from_secs(30))
+    );
     assert!(!registry.is_active(id, fixed_now() + Duration::from_secs(120)));
     assert_eq!(
         registry.expiry(id, fixed_now() + Duration::from_secs(120)),
         None
+    );
+}
+
+#[test]
+fn context_bypass_temporarily_passes_an_unlisted_chat_in_whitelist_mode() {
+    let registry = TemporaryBypassRegistry::default();
+    let now = fixed_now();
+    let context = group_editor(Some("临时 会话"));
+    registry.grant_for_context(&context, Duration::from_secs(60), now);
+    let settings = AppSettings {
+        rule_mode: RuleMode::ConfirmUnlessExcluded,
+        ..AppSettings::default()
+    };
+
+    assert_eq!(
+        registry.remaining_for_context(&context, now + Duration::from_secs(30)),
+        Some(Duration::from_secs(30))
+    );
+
+    assert_eq!(
+        evaluate_protection(&context, &settings, &registry, now).kind,
+        ProtectionDecisionKind::Pass
+    );
+    assert_eq!(
+        evaluate_protection(
+            &context,
+            &settings,
+            &registry,
+            now + Duration::from_secs(60)
+        )
+        .kind,
+        ProtectionDecisionKind::ConfirmUnlisted
+    );
+
+    let mut another_wechat_context = context.clone();
+    another_wechat_context.process_id += 1;
+    assert_eq!(
+        registry.remaining_for_context(&another_wechat_context, now),
+        None
+    );
+    assert_eq!(
+        evaluate_protection(&another_wechat_context, &settings, &registry, now).kind,
+        ProtectionDecisionKind::ConfirmUnlisted
     );
 }
 
@@ -310,6 +357,19 @@ fn missing_send_button_interception_defaults_to_enabled() {
         .expect("legacy settings should deserialize without the new preference");
 
     assert!(settings.intercept_send_button);
+}
+
+#[test]
+fn rule_mode_round_trips_through_settings_json() {
+    let settings = AppSettings {
+        rule_mode: RuleMode::ConfirmUnlessExcluded,
+        ..AppSettings::default()
+    };
+    let serialized = serde_json::to_string(&settings).expect("settings should serialize");
+    assert!(serialized.contains("\"ruleMode\":\"ConfirmUnlessExcluded\""));
+
+    let restored: AppSettings = serde_json::from_str(&serialized).expect("settings should load");
+    assert_eq!(restored.rule_mode, RuleMode::ConfirmUnlessExcluded);
 }
 
 #[test]

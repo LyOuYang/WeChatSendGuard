@@ -272,6 +272,13 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "trustedWeixinIdentity"
             | "releaseVersion"
             | "checkMode"
+            | "contextSource"
+            | "requestedMinutes"
+            | "ruleMode"
+            | "protectionEnabled"
+            | "knownChat"
+            | "chatTargetKind"
+            | "decisionKind"
             | "observationId"
             | "diagnosticWindowMatchesContext"
             | "foregroundProcessId"
@@ -319,6 +326,7 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "contextCompatibilityAvailable"
             | "contextGeneration"
             | "contextAgeMilliseconds"
+            | "contextMaximumAgeMilliseconds"
     ) && value.len() <= 256
         && !value.contains(['\r', '\n'])
 }
@@ -453,6 +461,14 @@ mod tests {
             "trustedWeixinIdentity",
             "com.tencent.xinWeChat"
         ));
+        assert!(is_safe_detail("contextSource", "provided-context"));
+        assert!(is_safe_detail("requestedMinutes", "5"));
+        assert!(is_safe_detail("ruleMode", "confirm-unless-excluded"));
+        assert!(is_safe_detail("protectionEnabled", "true"));
+        assert!(is_safe_detail("knownChat", "true"));
+        assert!(is_safe_detail("chatTargetKind", "group"));
+        assert!(is_safe_detail("decisionKind", "confirm-unlisted"));
+        assert!(is_safe_detail("contextMaximumAgeMilliseconds", "5000"));
         assert!(!is_safe_detail("chatTitle", "private name"));
         assert!(!is_safe_detail("source", "line one\nline two"));
     }

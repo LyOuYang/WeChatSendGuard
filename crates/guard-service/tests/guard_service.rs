@@ -4,12 +4,14 @@ use std::{
 };
 
 use wechat_send_guard_core::{
-    AppSettings, ChatContext, ChatTargetKind, ConfirmationOutcome, ProtectedChat,
+    AppSettings, ChatContext, ChatTargetKind, ConfirmationOutcome, ProtectedChat, RuleMode,
 };
 use wechat_send_guard_platform_api::{
     FakeChatContextProvider, RecordingAuditLog, RecordingInputInjector,
 };
-use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
+use wechat_send_guard_service::{
+    CompletionResult, EnterHandling, GuardService, PhysicalEnter, TemporaryBypassRejection,
+};
 
 fn fixed_now() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_787_011_200)
@@ -366,15 +368,63 @@ fn temporary_pause_cancels_an_active_confirmation_and_rejects_late_confirmation(
 
 #[test]
 fn temporary_pause_rejects_unknown_duration_without_changing_state() {
+    let audit = Arc::new(RecordingAuditLog::default());
     let service = GuardService::new(
         protected_button_settings(),
         Arc::new(FakeChatContextProvider::new(protected_context("工作群"))),
         Arc::new(RecordingInputInjector::default()),
-        Arc::new(RecordingAuditLog::default()),
+        audit.clone(),
     );
 
     assert!(!service.try_pause(2, fixed_now()));
     assert!(service.pause_remaining(fixed_now()).is_none());
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "protection-pause")
+        .expect("invalid pause duration should be audited");
+    assert_eq!(entry.result, "rejected-invalid-duration");
+    assert!(entry.trace_id.is_some());
+    assert_eq!(entry.details.get("requestedMinutes"), Some(&"2".to_owned()));
+}
+
+#[test]
+fn temporary_pause_resume_and_expiry_are_traced() {
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(protected_context("工作群"))),
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+    let start = fixed_now();
+
+    assert!(service.try_pause(1, start));
+    assert!(service.resume_pause(start + Duration::from_secs(1)));
+    let manual_resume = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.result == "resumed-manual")
+        .expect("manual resume should be audited");
+    assert!(manual_resume.trace_id.is_some());
+    assert_eq!(
+        manual_resume.details.get("source"),
+        Some(&"tray-pause-resume".to_owned())
+    );
+    assert!(!manual_resume.details.contains_key("requestedMinutes"));
+
+    assert!(service.try_pause(1, start + Duration::from_secs(2)));
+    assert!(service.expire_pause(start + Duration::from_secs(62)));
+    let timed_out_resume = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.result == "resumed-timeout")
+        .expect("timeout resume should be audited");
+    assert!(timed_out_resume.trace_id.is_some());
+    assert_eq!(
+        timed_out_resume.details.get("source"),
+        Some(&"pause-expiry".to_owned())
+    );
 }
 
 #[test]
@@ -388,12 +438,282 @@ fn temporary_bypass_is_unavailable_while_protection_is_paused() {
     let start = fixed_now();
 
     assert!(service.try_pause(1, start));
-    assert!(service.try_grant_current_bypass(1, start).is_none());
+    assert_eq!(
+        service.try_grant_current_bypass(1, start),
+        Err(TemporaryBypassRejection::ProtectionPaused)
+    );
     assert!(
         service
             .try_grant_current_bypass(1, start + Duration::from_secs(61))
-            .is_some()
+            .is_ok()
     );
+}
+
+#[test]
+fn temporary_bypass_allows_an_unlisted_chat_in_whitelist_mode_until_expiry() {
+    let start = fixed_now();
+    let context = protected_context("未加入白名单");
+    let platform = Arc::new(FakeChatContextProvider::new(context.clone()));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        AppSettings {
+            rule_mode: RuleMode::ConfirmUnlessExcluded,
+            ..AppSettings::default()
+        },
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    let grant = service
+        .try_grant_current_bypass(1, start)
+        .expect("an unlisted recognized chat should be temporarily allowed");
+    assert_eq!(grant.display_name, "未加入白名单");
+    assert_eq!(
+        service.temporary_bypass_remaining_for_context(&context, start + Duration::from_secs(1)),
+        Some(Duration::from_secs(59))
+    );
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(59)),
+        EnterHandling::PassThrough
+    );
+    assert!(matches!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(60)),
+        EnterHandling::SuppressAndConfirm(_)
+    ));
+    assert_eq!(
+        service.temporary_bypass_remaining_for_context(&context, start + Duration::from_secs(60)),
+        None
+    );
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "temporary-bypass")
+        .expect("temporary bypass should be audited");
+    assert_eq!(entry.result, "granted-1m");
+    assert!(entry.trace_id.is_some());
+    assert_eq!(
+        entry.details.get("contextSource"),
+        Some(&"foreground-snapshot".to_owned())
+    );
+    assert_eq!(
+        entry.details.get("ruleMode"),
+        Some(&"confirm-unless-excluded".to_owned())
+    );
+    assert_eq!(
+        entry.details.get("decisionKind"),
+        Some(&"confirm-unlisted".to_owned())
+    );
+}
+
+#[test]
+fn temporary_bypass_remaining_in_protect_list_mode_requires_the_current_chat() {
+    let start = fixed_now();
+    let context = protected_context("工作群");
+    let service = GuardService::new(
+        protected_button_settings(),
+        Arc::new(FakeChatContextProvider::new(context.clone())),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+
+    service
+        .try_grant_current_bypass(1, start)
+        .expect("a protected chat should receive a temporary bypass");
+    assert_eq!(
+        service.temporary_bypass_remaining_for_context(&context, start + Duration::from_secs(1)),
+        Some(Duration::from_secs(59))
+    );
+    assert_eq!(
+        service.temporary_bypass_remaining_for_context(
+            &protected_context("其他群"),
+            start + Duration::from_secs(1),
+        ),
+        None
+    );
+}
+
+#[test]
+fn temporary_bypass_accepts_a_recent_tray_context_for_both_send_paths() {
+    let start = fixed_now();
+    let mut remembered_context = protected_context("未加入白名单");
+    remembered_context.is_group_chat = false;
+    remembered_context.is_contact_chat = true;
+    remembered_context.observed_at = Some(start - Duration::from_millis(4_500));
+    let platform = Arc::new(FakeChatContextProvider::new(remembered_context.clone()));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        AppSettings {
+            rule_mode: RuleMode::ConfirmUnlessExcluded,
+            ..AppSettings::default()
+        },
+        platform.clone(),
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    let grant = service
+        .try_grant_bypass_for_context(remembered_context.clone(), 1, start)
+        .expect("a recognized context within the tray action window should be allowed");
+    assert_eq!(grant.display_name, "未加入白名单");
+
+    let mut refreshed_context = remembered_context;
+    refreshed_context.observed_at = Some(start);
+    platform.set_current(refreshed_context);
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(1)),
+        EnterHandling::PassThrough
+    );
+    assert_eq!(
+        service.handle_send_button_click(42, start + Duration::from_secs(1)),
+        EnterHandling::PassThrough
+    );
+
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "temporary-bypass")
+        .expect("tray bypass should be audited");
+    assert_eq!(entry.result, "granted-1m");
+    assert_eq!(
+        entry.details.get("contextAgeMilliseconds"),
+        Some(&"4500".to_owned())
+    );
+    assert_eq!(
+        entry.details.get("contextMaximumAgeMilliseconds"),
+        Some(&"5000".to_owned())
+    );
+}
+
+#[test]
+fn temporary_bypass_rejects_a_context_after_the_tray_action_window() {
+    let start = fixed_now();
+    let mut context = protected_context("未加入白名单");
+    context.observed_at = Some(start - Duration::from_millis(5_001));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        AppSettings {
+            rule_mode: RuleMode::ConfirmUnlessExcluded,
+            ..AppSettings::default()
+        },
+        Arc::new(FakeChatContextProvider::new(context.clone())),
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    assert_eq!(
+        service.try_grant_bypass_for_context(context, 1, start),
+        Err(TemporaryBypassRejection::ContextStale)
+    );
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "temporary-bypass")
+        .expect("rejected tray bypass should be audited");
+    assert_eq!(entry.result, "rejected-context-stale");
+    assert!(entry.trace_id.is_some());
+    assert_eq!(
+        entry.details.get("contextAgeMilliseconds"),
+        Some(&"5001".to_owned())
+    );
+}
+
+#[test]
+fn temporary_bypass_uses_the_supplied_recognized_context_after_focus_changes() {
+    let start = fixed_now();
+    let remembered_context = protected_context("未加入白名单");
+    let platform = Arc::new(FakeChatContextProvider::new(remembered_context.clone()));
+    platform.set_current(ChatContext {
+        is_message_editor_focused: false,
+        ..remembered_context.clone()
+    });
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        AppSettings {
+            rule_mode: RuleMode::ConfirmUnlessExcluded,
+            ..AppSettings::default()
+        },
+        platform.clone(),
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    assert!(
+        service
+            .try_grant_bypass_for_context(remembered_context.clone(), 1, start)
+            .is_ok()
+    );
+    platform.set_current(remembered_context);
+    assert_eq!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(59)),
+        EnterHandling::PassThrough
+    );
+    assert!(matches!(
+        service.handle_physical_enter(physical_enter(), start + Duration::from_secs(60)),
+        EnterHandling::SuppressAndConfirm(_)
+    ));
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "temporary-bypass")
+        .expect("supplied-context bypass should be audited");
+    assert_eq!(
+        entry.details.get("contextSource"),
+        Some(&"provided-context".to_owned())
+    );
+}
+
+#[test]
+fn temporary_bypass_and_pause_are_reset_when_the_service_is_recreated() {
+    let start = fixed_now();
+    let settings = protected_button_settings();
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+
+    let bypassed = GuardService::new(
+        settings.clone(),
+        platform.clone(),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    assert!(bypassed.try_grant_current_bypass(5, start).is_ok());
+    assert_eq!(
+        bypassed.handle_physical_enter(physical_enter(), start + Duration::from_secs(1)),
+        EnterHandling::PassThrough
+    );
+
+    let restarted_after_bypass = GuardService::new(
+        settings.clone(),
+        platform.clone(),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    assert!(matches!(
+        restarted_after_bypass
+            .handle_physical_enter(physical_enter(), start + Duration::from_secs(1)),
+        EnterHandling::SuppressAndConfirm(_)
+    ));
+
+    let paused = GuardService::new(
+        settings.clone(),
+        platform.clone(),
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    assert!(paused.try_pause(5, start));
+    assert!(paused.pause_remaining(start).is_some());
+
+    let restarted_after_pause = GuardService::new(
+        settings,
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        Arc::new(RecordingAuditLog::default()),
+    );
+    assert!(restarted_after_pause.pause_remaining(start).is_none());
+    assert!(matches!(
+        restarted_after_pause
+            .handle_physical_enter(physical_enter(), start + Duration::from_secs(1)),
+        EnterHandling::SuppressAndConfirm(_)
+    ));
 }
 
 #[test]

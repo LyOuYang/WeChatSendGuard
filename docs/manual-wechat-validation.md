@@ -3,7 +3,7 @@
 ## 前置条件
 
 - 使用专用测试账号和没有无关收件人的私有测试群或收藏/文件传输目标。
-- 记录目标平台版本、微信版本、应用版本、安装包 SHA-256、测试日期和测试人；macOS 还需记录 CPU 架构、bundle/Team 签名身份与是否公证。普通安装不要求终端用户手动校验 SHA-256。
+- 记录目标平台版本、微信版本、应用版本、安装包 SHA-256、测试日期和测试人；macOS 还需记录 CPU 架构、bundle/Team 签名身份与是否公证。
 - 安装候选包后从全新应用启动开始验证。
 - 验证期间不运行任何可能操作真实微信的自动化工具。
 
@@ -13,11 +13,11 @@
 2. 在名单模式和白名单模式之间切换，验证二者保留独立名单。
 3. 人工加入一个群聊和一个联系人，验证类型标签与别名。
 4. 修改非名单设置后不保存就关闭并重开，验证旧生效值未变；保存后重启，验证新值已持久化。
-5. 检查默认微信路径自动显示为 `C:\Program Files\Tencent\Weixin\Weixin.exe`。在可控测试环境中保存一个实际的其他本地 `Weixin.exe` 路径，再恢复默认，验证每次保存后状态重新观察且错误路径不会导致输入注入。
+5. 启动一个微信实例，验证应用自动识别并显示该实例的实际 `Weixin.exe` 路径，不要求填写固定安装目录；关闭微信后重新启动应用，验证未检测到微信时不会建立信任；同时运行多个不同安装位置的微信，验证应用不会使用不确定结果更新信任身份。
 6. 分别从主开关和托盘切换守护，验证无需点击保存立即生效、重启后保持正确，托盘同时显示当前状态和下一步“关闭”或“启用”。
 7. 从托盘分别选择暂停 1、5、15 分钟，验证键盘 Enter 和发送按钮在暂停期间直接保持微信行为，状态显示剩余时间，到期后自动恢复；暂停期间已有确认请求应被取消。
 8. 最小化设置窗口后点击托盘图标，验证原窗口被恢复而不是继续最小化。
-9. 从托盘设置临时放行，验证在非“仅保护指定名单”模式下不可用或被拒绝。
+9. 从托盘设置临时放行：在全局防护（白名单模式）下，对未加入白名单但可识别且正在编辑的会话分别验证 1、5、15 分钟放行、到期恢复，并确认不会写入白名单；在“仅保护指定名单”模式下，只有名单内受保护会话可放行，名单外应提示无需放行。重启应用后临时放行和暂停均不得保留。
 
 ## 发送保护
 
@@ -37,7 +37,7 @@
 ## Windows 不可识别诊断判读
 
 1. 每条 schema v2 审计记录应依次以 `localTime`、`applicationVersion`、`weixinVersion` 开头，并包含 `sessionId` 和 `processId`；同一时间出现多个 session/process 表示存在多个守护实例。
-2. `trustedWeixin=true` 且 `contextCompatibilityAvailable=false` 表示自定义路径信任已通过，失败发生在 UIA 界面识别，不应再归因于“没有找到 Weixin.exe”。
+2. `trustedWeixin=true` 且 `contextCompatibilityAvailable=false` 表示自动识别到的路径信任已通过，失败发生在 UIA 界面识别，不应再归因于“没有找到 Weixin.exe”。
 3. `uiaRootAvailable=false` 或 `uiaStatus=query-failed` 表示没有取得可用根节点；结合 `uiaErrorCode`（含可安全提取时的 HRESULT）检查 COM/UIA、权限或运行环境。
 4. `uiaRootAvailable=true` 后先检查 `uiaTreeQueryStatus`：`query-failed`/`length-failed` 结合 `uiaTreeErrorCode` 表示整树枚举失败；`success` 但 `uiaTreeDescendantCount=0` 表示只取得原生窗口壳；`partial-property-read-failure` 表示子节点存在但控件类型、AutomationId 或 ClassName 至少有一类无法稳定读取。
 5. 根节点有子节点但 `editorFound=false` 或 `chatTitleElementFound=false` 时，分别检查 `editorQueryStatus`、`chatTitleQueryStatus`、`groupTitleQueryStatus` 及各自的错误码和候选数。候选数为 0 且树中 AutomationId/ClassName 大量可读，表示微信控件标识很可能已变化；AutomationId/ClassName 可读数接近 0，则表示 UIA 桥接只暴露了不完整子树。`uiaTreeControlTypeCounts` 用于对比正常机与故障机的无内容树结构。

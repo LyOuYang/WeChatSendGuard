@@ -57,7 +57,10 @@ use wechat_send_guard_platform_windows::{
     discover_running_weixin_executable, enable_high_dpi_awareness, path_matches_configured_weixin,
     select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
 };
-use wechat_send_guard_service::{CompletionResult, EnterHandling, GuardService, PhysicalEnter};
+use wechat_send_guard_service::{
+    CompletionResult, EnterHandling, GuardService, PhysicalEnter, TEMPORARY_BYPASS_CONTEXT_MAX_AGE,
+    TemporaryBypassRejection,
+};
 
 const APPLICATION_DIRECTORY: &str = "WeChatSendGuard";
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -178,6 +181,7 @@ impl Controller {
         } else if settings.start_with_windows {
             return Err("无法确定当前程序路径，未能设置开机启动。".to_owned());
         }
+        self.write_settings_audit(&settings, "saved");
         Ok(())
     }
 
@@ -198,7 +202,23 @@ impl Controller {
         );
         self.service.update_settings(settings.clone());
         self.settings = settings;
+        self.write_settings_audit(&self.settings, "protection-toggled");
         Ok(())
+    }
+
+    fn write_settings_audit(&self, settings: &AppSettings, result: &str) {
+        self.audit.write(
+            AuditEntry::new(SystemTime::now(), None, "settings", result)
+                .with_trace_id(Uuid::new_v4())
+                .with_details([
+                    ("source", "settings"),
+                    ("ruleMode", rule_mode_audit_label(settings.rule_mode)),
+                    (
+                        "protectionEnabled",
+                        if settings.enabled { "true" } else { "false" },
+                    ),
+                ]),
+        );
     }
 
     fn configure_observation(&self) {
@@ -218,11 +238,12 @@ impl Controller {
     }
 
     fn pause_protection(&mut self, minutes: u32, now: SystemTime) -> Result<(), String> {
-        if !self.settings.enabled {
-            return Err("发送守护当前未启用，无法设置暂停时间。".to_owned());
-        }
         if !self.service.try_pause(minutes, now) {
-            return Err("暂停时间无效，请选择 1、5 或 15 分钟。".to_owned());
+            return Err(if self.settings.enabled {
+                "暂停时间无效，请选择 1、5 或 15 分钟。".to_owned()
+            } else {
+                "发送守护当前未启用，无法设置暂停时间。".to_owned()
+            });
         }
         self.temporary_pause_active = true;
         self.configure_observation();
@@ -399,6 +420,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 "trustedWeixinIdentity",
                 current_trusted_wechat_identity(&settings),
             ),
+            (
+                "ruleMode",
+                rule_mode_audit_label(settings.rule_mode).to_owned(),
+            ),
+            ("protectionEnabled", settings.enabled.to_string()),
         ]),
     );
     #[cfg(windows)]
@@ -889,6 +915,26 @@ fn show_startup_error(message: &str) {
 }
 
 #[cfg(windows)]
+fn show_tray_action_error(title: &str, message: &str) {
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW},
+        core::PCWSTR,
+    };
+
+    let title = wide_for_message_box(title);
+    let message = wide_for_message_box(message);
+    // SAFETY: both UTF-16 buffers are NUL-terminated and live through the synchronous dialog.
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONWARNING,
+        );
+    }
+}
+
+#[cfg(windows)]
 fn wide_for_message_box(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -898,9 +944,43 @@ fn show_startup_error(message: &str) {
     show_error_dialog(message);
 }
 
+#[cfg(target_os = "macos")]
+fn show_tray_action_error(title: &str, message: &str) {
+    show_error_dialog(&format!("{title}\n{message}"));
+}
+
 #[cfg(not(any(windows, target_os = "macos")))]
 fn show_startup_error(message: &str) {
     eprintln!("WeChatSendGuard failed to start: {message}");
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn show_tray_action_error(title: &str, message: &str) {
+    eprintln!("{title}: {message}");
+}
+
+const fn temporary_bypass_rejection_message(rejection: TemporaryBypassRejection) -> &'static str {
+    match rejection {
+        TemporaryBypassRejection::InvalidDuration => "放行时间无效，请选择 1、5 或 15 分钟后重试。",
+        TemporaryBypassRejection::ProtectionDisabled => "发送守护当前未启用，无需临时放行。",
+        TemporaryBypassRejection::ProtectionPaused => "发送守护已暂停，无需临时放行。",
+        TemporaryBypassRejection::ContextStale => "当前会话信息已失效，请切回目标聊天后重试。",
+        TemporaryBypassRejection::ContextUntrusted
+        | TemporaryBypassRejection::ContextIncomplete
+        | TemporaryBypassRejection::EditorUnfocused => {
+            "未能确认当前微信会话，请返回目标聊天并将光标放入消息输入框后重试。"
+        }
+        TemporaryBypassRejection::ProtectedChatMissing => {
+            "当前会话保护规则不完整，临时放行未生效。"
+        }
+        TemporaryBypassRejection::NoProtectionRequired => {
+            "当前会话不受发送守护限制，无需临时放行。"
+        }
+        TemporaryBypassRejection::UnknownContext
+        | TemporaryBypassRejection::BlockedUnknownContext => {
+            "当前会话无法安全识别，临时放行未生效。请切回目标聊天后重试。"
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1551,21 +1631,39 @@ fn bind_tray_callbacks(
         let controller = Rc::clone(&controller);
         let main_window_weak = main_window_weak.clone();
         move |minutes| {
-            let service = controller.borrow().service.clone();
-            let result = service.try_grant_current_bypass(minutes as u32, SystemTime::now());
-            if let Some(window) = main_window_weak.upgrade() {
-                show_and_restore_main_window(&window);
-                match result {
-                    Some(chat) => set_save_status(
-                        &window,
-                        format!("已临时放行 {} {} 分钟", chat.display_name, minutes),
-                        false,
-                    ),
-                    None => set_save_status(
-                        &window,
-                        "临时放行仅适用于当前保护名单中的可识别会话。",
-                        true,
-                    ),
+            let (service, recent_context) = {
+                let controller = controller.borrow();
+                (
+                    controller.service.clone(),
+                    controller
+                        .provider
+                        .recent_recognized_chat(TEMPORARY_BYPASS_CONTEXT_MAX_AGE),
+                )
+            };
+            let now = SystemTime::now();
+            let result = match recent_context {
+                Some(context) => service.try_grant_bypass_for_context(context, minutes as u32, now),
+                None => service.try_grant_current_bypass(minutes as u32, now),
+            };
+            match result {
+                Ok(grant) => {
+                    if let Some(window) = main_window_weak.upgrade() {
+                        set_save_status(
+                            &window,
+                            format!(
+                                "已临时放行 {} {} 分钟（不会加入名单）",
+                                grant.display_name, minutes
+                            ),
+                            false,
+                        );
+                    }
+                }
+                Err(rejection) => {
+                    let message = temporary_bypass_rejection_message(rejection);
+                    if let Some(window) = main_window_weak.upgrade() {
+                        set_save_status(&window, message, true);
+                    }
+                    show_tray_action_error("临时放行未生效", message);
                 }
             }
         }
@@ -1576,27 +1674,17 @@ fn bind_tray_callbacks(
         let main_window_weak = main_window_weak.clone();
         let tray_weak = tray_weak.clone();
         move |minutes| {
-            if !matches!(minutes, 1 | 5 | 15) {
-                return;
-            }
-            if !controller.borrow().settings.enabled {
-                if let Some(window) = main_window_weak.upgrade() {
-                    show_and_restore_main_window(&window);
-                    set_save_status(&window, "发送守护当前未启用，无法设置暂停时间。", true);
-                }
-                return;
-            }
-
             let service = controller.borrow().service.clone();
-            cancel_pending_confirmation(&active_confirmation, &service, &main_window_weak);
             let result = controller
                 .borrow_mut()
                 .pause_protection(minutes as u32, SystemTime::now());
             let succeeded = result.is_ok();
-            if let Some(window) = main_window_weak.upgrade() {
-                show_and_restore_main_window(&window);
-                match result {
-                    Ok(()) => {
+            if succeeded {
+                cancel_pending_confirmation(&active_confirmation, &service, &main_window_weak);
+            }
+            match result {
+                Ok(()) => {
+                    if let Some(window) = main_window_weak.upgrade() {
                         window.set_protection_paused(true);
                         set_save_status(
                             &window,
@@ -1604,7 +1692,12 @@ fn bind_tray_callbacks(
                             false,
                         );
                     }
-                    Err(error) => set_save_status(&window, error, true),
+                }
+                Err(error) => {
+                    if let Some(window) = main_window_weak.upgrade() {
+                        set_save_status(&window, &error, true);
+                    }
+                    show_tray_action_error("暂停发送守护失败", &error);
                 }
             }
             if succeeded && let Some(tray) = tray_weak.upgrade() {
@@ -1624,7 +1717,6 @@ fn bind_tray_callbacks(
                 tray.set_protection_paused(false);
             }
             if resumed && let Some(window) = main_window_weak.upgrade() {
-                show_and_restore_main_window(&window);
                 window.set_protection_paused(false);
                 set_save_status(&window, "发送守护已恢复，立即生效", false);
             }
@@ -1648,10 +1740,14 @@ fn bind_tray_callbacks(
                     let mut controller = controller.borrow_mut();
                     let now = SystemTime::now();
                     controller.sync_temporary_pause(now);
+                    let context = controller.provider.current();
                     status_for_context(
                         &controller.settings,
-                        &controller.provider.current(),
+                        &context,
                         controller.service.pause_remaining(now),
+                        controller
+                            .service
+                            .temporary_bypass_remaining_for_context(&context, now),
                     )
                 };
                 set_save_status(&window, status, false);
@@ -1828,16 +1924,24 @@ fn install_status_refresh(
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, STATUS_POLL_INTERVAL, move || {
         let now = SystemTime::now();
-        let (settings, pause_remaining) = {
+        let context = provider.current();
+        let (settings, pause_remaining, temporary_bypass_remaining) = {
             let mut controller = controller.borrow_mut();
             controller.sync_temporary_pause(now);
             (
                 controller.settings.clone(),
                 controller.service.pause_remaining(now),
+                controller
+                    .service
+                    .temporary_bypass_remaining_for_context(&context, now),
             )
         };
-        let context = provider.current();
-        let (status, healthy) = status_for_context(&settings, &context, pause_remaining);
+        let (status, healthy) = status_for_context(
+            &settings,
+            &context,
+            pause_remaining,
+            temporary_bypass_remaining,
+        );
         if let Some(window) = main_window_weak.upgrade() {
             window.set_status_text(status.clone().into());
             window.set_status_healthy(healthy);
@@ -2708,6 +2812,7 @@ fn status_for_context(
     settings: &AppSettings,
     context: &ChatContext,
     pause_remaining: Option<Duration>,
+    temporary_bypass_remaining: Option<Duration>,
 ) -> (String, bool) {
     if let Some(remaining) = pause_remaining {
         return (
@@ -2729,6 +2834,15 @@ fn status_for_context(
     }
     if !context.is_compatibility_available {
         return ("状态：当前微信界面不可识别".to_owned(), false);
+    }
+    if let Some(remaining) = temporary_bypass_remaining {
+        return (
+            format!(
+                "状态：当前会话已临时放行（{}）",
+                pause_remaining_label(remaining)
+            ),
+            false,
+        );
     }
     let title = context.normalized_chat_title();
     if context.is_message_editor_focused {
@@ -2799,6 +2913,13 @@ const fn rule_mode_from_ui(mode: i32) -> Option<RuleMode> {
     }
 }
 
+const fn rule_mode_audit_label(mode: RuleMode) -> &'static str {
+    match mode {
+        RuleMode::ProtectListed => "protect-listed",
+        RuleMode::ConfirmUnlessExcluded => "confirm-unless-excluded",
+    }
+}
+
 const fn unknown_behavior_to_ui(behavior: UnknownContextBehavior) -> i32 {
     match behavior {
         UnknownContextBehavior::Confirm => 0,
@@ -2820,7 +2941,7 @@ mod tests {
     use super::{WeixinDetection, apply_detected_weixin_executable};
     use super::{
         is_background_start_argument, parse_bounded_u32, status_for_context,
-        window_position_for_cursor_drag,
+        temporary_bypass_rejection_message, window_position_for_cursor_drag,
     };
     use slint::PhysicalPosition;
     #[cfg(windows)]
@@ -2828,6 +2949,7 @@ mod tests {
     use wechat_send_guard_core::{AppSettings, ChatContext};
     #[cfg(windows)]
     use wechat_send_guard_platform_windows::RunningWeixinExecutable;
+    use wechat_send_guard_service::TemporaryBypassRejection;
 
     #[test]
     fn bounded_integer_parser_rejects_invalid_settings_before_persistence() {
@@ -2889,9 +3011,49 @@ mod tests {
     #[test]
     fn status_is_not_healthy_when_context_is_untrusted() {
         let (status, healthy) =
-            status_for_context(&AppSettings::default(), &ChatContext::default(), None);
+            status_for_context(&AppSettings::default(), &ChatContext::default(), None, None);
         assert!(!healthy);
         assert!(status.contains("等待微信"));
+    }
+
+    #[test]
+    fn paused_status_includes_the_remaining_time() {
+        let (status, healthy) = status_for_context(
+            &AppSettings::default(),
+            &ChatContext::default(),
+            Some(std::time::Duration::from_secs(5 * 60 + 1)),
+            Some(std::time::Duration::from_secs(60)),
+        );
+        assert!(!healthy);
+        assert_eq!(status, "状态：守护已暂停（剩余 6 分钟）");
+    }
+
+    #[test]
+    fn temporary_bypass_status_identifies_the_current_chat_and_remaining_time() {
+        let context = ChatContext {
+            is_trusted_weixin: true,
+            is_compatibility_available: true,
+            is_message_editor_focused: true,
+            is_group_chat: true,
+            chat_title: Some("工作群".to_owned()),
+            ..ChatContext::default()
+        };
+        let (status, healthy) = status_for_context(
+            &AppSettings::default(),
+            &context,
+            None,
+            Some(std::time::Duration::from_secs(5 * 60 + 1)),
+        );
+        assert!(!healthy);
+        assert_eq!(status, "状态：当前会话已临时放行（剩余 6 分钟）");
+    }
+
+    #[test]
+    fn stale_temporary_bypass_has_an_actionable_failure_message() {
+        assert_eq!(
+            temporary_bypass_rejection_message(TemporaryBypassRejection::ContextStale),
+            "当前会话信息已失效，请切回目标聊天后重试。"
+        );
     }
 
     #[test]

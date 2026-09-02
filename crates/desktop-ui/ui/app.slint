@@ -571,14 +571,14 @@ export component AppWindow inherits Window {
                 }
                 Rectangle { vertical-stretch: 1; background: #00000000; }
                 Rectangle {
-                    height: 48px;
+                    height: 60px;
                     border-radius: 8px;
                     background: #ffffff;
                     border-width: 1px;
                     border-color: #e2e8f0;
                     Rectangle {
                         x: 10px;
-                        y: 17px;
+                        y: (parent.height - self.height) / 2;
                         width: 14px;
                         height: 14px;
                         border-radius: 7px;
@@ -586,7 +586,7 @@ export component AppWindow inherits Window {
                     }
                     Rectangle {
                         x: 13px;
-                        y: 20px;
+                        y: (parent.height - self.height) / 2;
                         width: 8px;
                         height: 8px;
                         border-radius: 4px;
@@ -594,15 +594,15 @@ export component AppWindow inherits Window {
                     }
                     Text {
                         x: 30px;
-                        y: 0px;
+                        y: 6px;
                         width: parent.width - 42px;
-                        height: parent.height;
+                        height: parent.height - 12px;
                         text: root.status-text;
                         color: #475569;
                         font-size: 11px;
                         font-weight: 400;
                         vertical-alignment: center;
-                        overflow: elide;
+                        wrap: word-wrap;
                     }
                 }
             }
