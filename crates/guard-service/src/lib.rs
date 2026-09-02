@@ -11,7 +11,7 @@ use std::{
 use wechat_send_guard_core::{
     AppSettings, AuditEntry, ChatContext, ChatTargetKind, ConfirmationOutcome, PendingConfirmation,
     ProtectionDecisionKind, RuleMode, SendGuardStateMachine, TemporaryBypassRegistry,
-    evaluate_protection, title_matches,
+    evaluate_chat_protection, evaluate_protection, title_matches,
 };
 use wechat_send_guard_platform_api::{AuditLog, InputInjector, SendTargetPlatform};
 
@@ -686,6 +686,26 @@ impl GuardService {
                     .and_then(|chat| self.bypasses.remaining(chat.id, now))
             }
         }
+    }
+
+    /// Returns the rule result for the currently recognized chat without requiring editor focus.
+    /// The send path remains responsible for checking focus before it can suppress input.
+    pub fn current_session_requires_protection(
+        &self,
+        context: &ChatContext,
+        now: SystemTime,
+    ) -> Option<bool> {
+        if context.requires_elevation
+            || !context.is_trusted_weixin
+            || !context.is_compatibility_available
+            || !context.is_known_chat()
+            || context.normalized_chat_title().is_empty()
+        {
+            return None;
+        }
+
+        let settings = self.settings();
+        Some(evaluate_chat_protection(context, &settings, &self.bypasses, now).should_suppress())
     }
 
     fn try_grant_bypass_for_context_with_source(

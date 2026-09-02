@@ -420,7 +420,7 @@ export component AppWindow inherits Window {
     in-out property <int> rule-mode: 0;
     in-out property <[ChatRow]> active-chats;
     in-out property <string> selected-chat-id: "";
-    in-out property <string> status-text: "正在检测微信...";
+    in-out property <string> status-text: "未识别：正在检测微信...";
     in-out property <bool> status-healthy: false;
     in-out property <string> list-title: "需要二次确认的会话";
     in-out property <string> list-description: "名单修改会立即生效";
@@ -594,13 +594,13 @@ export component AppWindow inherits Window {
                     }
                     Text {
                         x: 30px;
-                        y: 6px;
+                        y: 0px;
                         width: parent.width - 42px;
-                        height: parent.height - 12px;
+                        height: parent.height;
                         text: root.status-text;
-                        color: #475569;
+                        color: root.status-healthy ? #059669 : #475569;
                         font-size: 11px;
-                        font-weight: 400;
+                        font-weight: root.status-healthy ? 600 : 400;
                         vertical-alignment: center;
                         wrap: word-wrap;
                     }
@@ -1479,7 +1479,7 @@ export component AppTray inherits SystemTrayIcon {
     tooltip: root.status-text;
     title: "WeChatSendGuard";
 
-    in-out property <string> status-text: "状态：正在检测微信";
+    in-out property <string> status-text: "未识别：正在检测微信...";
     in-out property <bool> protection-enabled: true;
     in-out property <bool> protection-paused: false;
     callback open-settings();

@@ -756,7 +756,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn run_ui_preview(settings: AppSettings) -> Result<(), Box<dyn Error>> {
     let window = AppWindow::new()?;
     render_settings(&window, &settings, None);
-    window.set_status_text("UI 预览模式：未启动发送守护".into());
+    window.set_status_text("未识别：UI 预览模式".into());
     window.set_status_healthy(false);
     window.show()?;
     slint::run_event_loop()?;
@@ -800,9 +800,9 @@ fn run_ui_snapshot(mut settings: AppSettings, active_page: i32) -> Result<(), Bo
     let enabled = settings.enabled;
     let enabled_suffix = if enabled { "enabled" } else { "disabled" };
     let status = if enabled {
-        "UI 校验模式：发送保护守护已启用"
+        "技术项目交付群：守护中"
     } else {
-        "UI 校验模式：发送保护守护已暂停"
+        "技术项目交付群：放行（守护未启用）"
     };
     window.set_status_text(status.into());
     window.set_status_healthy(enabled);
@@ -1736,7 +1736,7 @@ fn bind_tray_callbacks(
         move || {
             if let Some(window) = main_window_weak.upgrade() {
                 show_and_restore_main_window(&window);
-                let (status, _) = {
+                let status = {
                     let mut controller = controller.borrow_mut();
                     let now = SystemTime::now();
                     controller.sync_temporary_pause(now);
@@ -1748,9 +1748,12 @@ fn bind_tray_callbacks(
                         controller
                             .service
                             .temporary_bypass_remaining_for_context(&context, now),
+                        controller
+                            .service
+                            .current_session_requires_protection(&context, now),
                     )
                 };
-                set_save_status(&window, status, false);
+                set_save_status(&window, status.summary(), false);
             }
         }
     });
@@ -1925,7 +1928,7 @@ fn install_status_refresh(
     timer.start(TimerMode::Repeated, STATUS_POLL_INTERVAL, move || {
         let now = SystemTime::now();
         let context = provider.current();
-        let (settings, pause_remaining, temporary_bypass_remaining) = {
+        let (settings, pause_remaining, temporary_bypass_remaining, session_requires_protection) = {
             let mut controller = controller.borrow_mut();
             controller.sync_temporary_pause(now);
             (
@@ -1934,21 +1937,26 @@ fn install_status_refresh(
                 controller
                     .service
                     .temporary_bypass_remaining_for_context(&context, now),
+                controller
+                    .service
+                    .current_session_requires_protection(&context, now),
             )
         };
-        let (status, healthy) = status_for_context(
+        let status = status_for_context(
             &settings,
             &context,
             pause_remaining,
             temporary_bypass_remaining,
+            session_requires_protection,
         );
+        let status_summary = status.summary();
         if let Some(window) = main_window_weak.upgrade() {
-            window.set_status_text(status.clone().into());
-            window.set_status_healthy(healthy);
+            window.set_status_text(status_summary.clone().into());
+            window.set_status_healthy(status.healthy);
             window.set_protection_paused(pause_remaining.is_some());
         }
         if let Some(tray) = tray_weak.upgrade() {
-            tray.set_status_text(status.into());
+            tray.set_status_text(status_summary.into());
             tray.set_protection_enabled(settings.enabled);
             tray.set_protection_paused(pause_remaining.is_some());
         }
@@ -2808,57 +2816,84 @@ fn set_save_status(window: &AppWindow, message: impl Into<slint::SharedString>, 
     window.set_save_status_error(is_error);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusDisplay {
+    session_text: String,
+    detail_text: String,
+    healthy: bool,
+}
+
+impl StatusDisplay {
+    fn new(session_text: impl Into<String>, detail_text: impl Into<String>, healthy: bool) -> Self {
+        Self {
+            session_text: session_text.into(),
+            detail_text: detail_text.into(),
+            healthy,
+        }
+    }
+
+    fn summary(&self) -> String {
+        format!("{}：{}", self.session_text, self.detail_text)
+    }
+}
+
 fn status_for_context(
     settings: &AppSettings,
     context: &ChatContext,
     pause_remaining: Option<Duration>,
     temporary_bypass_remaining: Option<Duration>,
-) -> (String, bool) {
+    session_requires_protection: Option<bool>,
+) -> StatusDisplay {
+    let session_text = current_session_label(context);
     if let Some(remaining) = pause_remaining {
-        return (
-            format!("状态：守护已暂停（{}）", pause_remaining_label(remaining)),
+        return StatusDisplay::new(
+            session_text,
+            format!("放行（守护已暂停，{}）", pause_remaining_label(remaining)),
             false,
         );
     }
     if !settings.enabled {
-        return ("状态：守护已暂停".to_owned(), false);
+        return StatusDisplay::new(session_text, "放行（守护未启用）", false);
     }
     if context.requires_elevation {
-        return (
-            "状态：微信以管理员权限运行，无法读取其窗口".to_owned(),
-            false,
-        );
+        return StatusDisplay::new("未识别", "无法判断（微信以管理员权限运行）", false);
     }
     if !context.is_trusted_weixin {
-        return ("状态：等待微信成为前台窗口".to_owned(), false);
+        return StatusDisplay::new("未识别", "微信不在前台", false);
     }
     if !context.is_compatibility_available {
-        return ("状态：当前微信界面不可识别".to_owned(), false);
+        return StatusDisplay::new("未识别", "无法识别微信界面", false);
     }
     if let Some(remaining) = temporary_bypass_remaining {
-        return (
-            format!(
-                "状态：当前会话已临时放行（{}）",
-                pause_remaining_label(remaining)
-            ),
+        return StatusDisplay::new(
+            session_text,
+            format!("放行（临时，{}）", pause_remaining_label(remaining)),
             false,
         );
     }
-    let title = context.normalized_chat_title();
-    if context.is_message_editor_focused {
-        let suffix = if title.is_empty() {
-            "已就绪".to_owned()
-        } else {
-            title
-        };
-        return (format!("状态：守护中（{suffix}）"), true);
+    match session_requires_protection {
+        Some(true) => StatusDisplay::new(
+            session_text,
+            "守护中".to_owned(),
+            context.is_message_editor_focused,
+        ),
+        Some(false) => StatusDisplay::new(session_text, "放行", false),
+        None => StatusDisplay::new(session_text, "无法判断", false),
     }
-    let suffix = if title.is_empty() {
-        String::new()
-    } else {
-        format!("（{title}）")
-    };
-    (format!("状态：等待消息输入框焦点{suffix}"), false)
+}
+
+fn current_session_label(context: &ChatContext) -> String {
+    if !context.requires_elevation
+        && context.is_trusted_weixin
+        && context.is_compatibility_available
+        && context.is_known_chat()
+    {
+        let title = context.normalized_chat_title();
+        if !title.is_empty() {
+            return title;
+        }
+    }
+    "未识别".to_owned()
 }
 
 fn pause_remaining_label(remaining: Duration) -> String {
@@ -3010,22 +3045,29 @@ mod tests {
 
     #[test]
     fn status_is_not_healthy_when_context_is_untrusted() {
-        let (status, healthy) =
-            status_for_context(&AppSettings::default(), &ChatContext::default(), None, None);
-        assert!(!healthy);
-        assert!(status.contains("等待微信"));
+        let status = status_for_context(
+            &AppSettings::default(),
+            &ChatContext::default(),
+            None,
+            None,
+            None,
+        );
+        assert!(!status.healthy);
+        assert_eq!(status.session_text, "未识别");
+        assert_eq!(status.detail_text, "微信不在前台");
     }
 
     #[test]
     fn paused_status_includes_the_remaining_time() {
-        let (status, healthy) = status_for_context(
+        let status = status_for_context(
             &AppSettings::default(),
             &ChatContext::default(),
             Some(std::time::Duration::from_secs(5 * 60 + 1)),
             Some(std::time::Duration::from_secs(60)),
+            None,
         );
-        assert!(!healthy);
-        assert_eq!(status, "状态：守护已暂停（剩余 6 分钟）");
+        assert!(!status.healthy);
+        assert_eq!(status.summary(), "未识别：放行（守护已暂停，剩余 6 分钟）");
     }
 
     #[test]
@@ -3038,14 +3080,59 @@ mod tests {
             chat_title: Some("工作群".to_owned()),
             ..ChatContext::default()
         };
-        let (status, healthy) = status_for_context(
+        let status = status_for_context(
             &AppSettings::default(),
             &context,
             None,
             Some(std::time::Duration::from_secs(5 * 60 + 1)),
+            Some(true),
         );
-        assert!(!healthy);
-        assert_eq!(status, "状态：当前会话已临时放行（剩余 6 分钟）");
+        assert!(!status.healthy);
+        assert_eq!(status.session_text, "工作群");
+        assert_eq!(status.detail_text, "放行（临时，剩余 6 分钟）");
+    }
+
+    #[test]
+    fn status_identifies_current_session_and_final_protection_result() {
+        let context = ChatContext {
+            is_trusted_weixin: true,
+            is_compatibility_available: true,
+            is_message_editor_focused: true,
+            is_contact_chat: true,
+            chat_title: Some("张三".to_owned()),
+            ..ChatContext::default()
+        };
+
+        let protected =
+            status_for_context(&AppSettings::default(), &context, None, None, Some(true));
+        assert_eq!(protected.session_text, "张三");
+        assert_eq!(protected.detail_text, "守护中");
+        assert!(protected.healthy);
+
+        let unprotected =
+            status_for_context(&AppSettings::default(), &context, None, None, Some(false));
+        assert_eq!(unprotected.session_text, "张三");
+        assert_eq!(unprotected.detail_text, "放行");
+        assert!(!unprotected.healthy);
+    }
+
+    #[test]
+    fn disabled_status_keeps_the_current_session_visible() {
+        let context = ChatContext {
+            is_trusted_weixin: true,
+            is_compatibility_available: true,
+            is_contact_chat: true,
+            chat_title: Some("李四".to_owned()),
+            ..ChatContext::default()
+        };
+        let settings = AppSettings {
+            enabled: false,
+            ..AppSettings::default()
+        };
+
+        let status = status_for_context(&settings, &context, None, None, Some(false));
+        assert_eq!(status.session_text, "李四");
+        assert_eq!(status.detail_text, "放行（守护未启用）");
     }
 
     #[test]

@@ -102,6 +102,22 @@ pub fn evaluate_protection(
         return ProtectionDecision::pass();
     }
 
+    evaluate_chat_protection(context, settings, bypasses, now)
+}
+
+/// Evaluates the protection rule for a recognized chat without requiring the message editor to be
+/// focused. The send path still uses [`evaluate_protection`] so an unfocused editor cannot trigger
+/// a confirmation, while the UI can show the rule result for the currently visible chat.
+pub fn evaluate_chat_protection(
+    context: &ChatContext,
+    settings: &AppSettings,
+    bypasses: &TemporaryBypassRegistry,
+    now: SystemTime,
+) -> ProtectionDecision {
+    if !settings.enabled || !context.is_trusted_weixin || !context.is_compatibility_available {
+        return ProtectionDecision::pass();
+    }
+
     let title = context.normalized_chat_title();
     let Some(target_kind) = context.target_kind() else {
         return unknown_context_decision(settings);
