@@ -956,7 +956,7 @@ fn open_path_in_explorer(path: &std::path::Path) -> Result<(), String> {
 }
 
 fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
-    let (audit, settings, weixin_process_id) = {
+    let (audit, settings, _weixin_process_id) = {
         let controller = controller.borrow();
         (
             controller.audit.clone(),
@@ -981,7 +981,7 @@ fn export_diagnostics(window: &AppWindow, controller: &Rc<RefCell<Controller>>) 
     #[cfg(windows)]
     let weixin_installation = Some(diagnostics::collect_weixin_installation_diagnostics(
         settings.trusted_weixin_executable_path.as_deref(),
-        weixin_process_id,
+        _weixin_process_id,
     ));
     #[cfg(target_os = "macos")]
     let weixin_installation = None;
@@ -2686,7 +2686,6 @@ fn update_selected_aliases(settings: &mut AppSettings, selected_id: &str, aliase
     }
 }
 
-#[cfg(windows)]
 fn parse_bounded_u32(value: &str, minimum: u32, maximum: u32, label: &str) -> Result<u32, String> {
     let parsed = value
         .trim()

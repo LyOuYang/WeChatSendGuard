@@ -1,12 +1,14 @@
 use chrono::{DateTime, Local, SecondsFormat};
 use serde::Serialize;
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use std::{collections::VecDeque, io::Read, path::PathBuf, time::UNIX_EPOCH};
 use std::{
-    collections::VecDeque,
     fs::{self, File},
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    io::{self, Write},
+    path::Path,
+    time::SystemTime,
 };
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};
 
