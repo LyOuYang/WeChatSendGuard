@@ -28,6 +28,24 @@ cargo run -p wechat-send-guard             # launch the desktop application
 
 The installer requires Rust 1.92+, the Windows MSVC toolchain, and NSIS 3.x. `VERSION` is the single source of the product version; keep package and installer metadata aligned with it.
 
+## Versioning and Release Rules
+
+- Treat `VERSION` and the Cargo workspace version as the public product version, not a local compile counter. Local Debug builds, `cargo run`, and ordinary CI builds must not increment `VERSION`.
+- Use a separate build identifier for local and CI output, such as `local.<UTC date>.<short SHA>` or `ci.<run ID>.<short SHA>`. Build identifiers are for traceability and must not be used as update precedence.
+- Before answering which version should be released, check the remote GitHub Releases and Tags, the current branch, the local `VERSION`, and whether any higher candidate was distributed to testers. Do not infer a public Beta number from local commits or prior AI builds.
+- For a target whose highest published version is `X.Y.Z-beta.N`, the next public Beta is `X.Y.Z-beta.(N+1)` only when higher candidates were not distributed. A candidate that was distributed to testers consumes its number even if it was never uploaded to GitHub.
+- Never reuse, move, overwrite, or retag a public version. A changed binary, resource, installer, or packaging script needs a new unique distributed build; a same-Commit rebuild does not need a product-version bump before publication.
+- Keep public versions in the repository-supported forms `X.Y.Z` and `X.Y.Z-beta.N`. Do not publish local `-dev` versions or `+build` metadata as public release Tags.
+- Update `VERSION` and the Cargo workspace version in the same Commit before creating the exact `v<VERSION>` Tag. Stable releases come from `main`; Beta releases come from `dev`.
+- `dev` is Beta-only and may publish only `vX.Y.Z-beta.N`; `main` is stable-only and may publish only `vX.Y.Z`. Reject any other branch/version combination before starting release work.
+- When a user asks to release, first audit remote Releases/Tags, the current branch, local `VERSION`, Cargo workspace version, and tester-distribution history. Then report the inferred version, evidence, reason, target branch, and expected Tag for review.
+- The audit phase must not push code, create or push Tags, start a tag-triggered build, or manually dispatch the release workflow. Only after the user explicitly approves the proposed version may the agent update version files, commit, and push to trigger the build.
+- If the user has not explicitly approved the proposed version, or the version/distribution evidence is incomplete, stop before any push or release build.
+- Every GitHub Actions Release must include a concise, reviewed summary of the actual changes since the previous public Tag. Do not rely only on auto-generated commit lists or mention local-only builds.
+- Use the fixed release-note format in `docs/release.md`: separate `Windows` and `macOS` sections, use short bullets, include platform-specific compatibility/validation, and finish with `已知问题`. Omit inapplicable bullets and never claim unverified compatibility.
+- Store the reviewed Release body at `docs/release-notes/<VERSION>.md` in the tagged Commit. The release workflow must validate that file and use it as the GitHub Release body; a release without the fixed sections is invalid.
+- Local installer tests must use a disposable VM or a separate Local installation identity. Do not assume that a different displayed version isolates the shared Windows install directory and uninstall registration.
+
 ## Coding Style & Naming Conventions
 
 Use `rustfmt` defaults (four spaces) and keep Clippy warning-free. Follow existing Rust naming: `PascalCase` types and enum variants, `snake_case` functions, modules, and fields, and descriptive test names such as `protected_list_matches_groups_and_contacts_without_cross_matching`. Keep UI text in the Slint view and express OS capabilities through `platform-api` traits rather than cross-layer calls.

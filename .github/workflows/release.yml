@@ -64,6 +64,12 @@ jobs:
           [[ "$tag" == "v$version" ]] || { echo "Tag $tag does not match VERSION $version" >&2; exit 1; }
           cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "wechat-send-guard") | .version')"
           [[ "$cargo_version" == "$version" ]] || { echo "Cargo version $cargo_version does not match VERSION $version" >&2; exit 1; }
+          release_notes="docs/release-notes/$version.md"
+          test -s "$release_notes" || { echo "Missing release notes: $release_notes" >&2; exit 1; }
+          grep -q '^## 更新内容$' "$release_notes" || { echo "Release notes must contain ## 更新内容" >&2; exit 1; }
+          grep -q '^### Windows$' "$release_notes" || { echo "Release notes must contain ### Windows" >&2; exit 1; }
+          grep -q '^### macOS$' "$release_notes" || { echo "Release notes must contain ### macOS" >&2; exit 1; }
+          grep -q '^### 已知问题$' "$release_notes" || { echo "Release notes must contain ### 已知问题" >&2; exit 1; }
           git fetch origin --no-tags "+refs/heads/$source_branch:refs/remotes/origin/$source_branch"
           git merge-base --is-ancestor HEAD "origin/$source_branch" || {
             echo "Tag $tag must point to a commit on origin/$source_branch" >&2
@@ -161,6 +167,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
@@ -190,7 +200,8 @@ jobs:
           name: WeChatSendGuard ${{ needs.validate.outputs.tag }}${{ needs.validate.outputs.channel == 'beta' && ' (Beta)' || '' }}
           prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
           make_latest: ${{ needs.validate.outputs.channel == 'stable' }}
-          generate_release_notes: true
+          body_path: docs/release-notes/${{ needs.validate.outputs.version }}.md
+          generate_release_notes: false
           fail_on_unmatched_files: true
           files: |
             dist/windows/WeChatSendGuard-Setup-${{ needs.validate.outputs.version }}.exe
