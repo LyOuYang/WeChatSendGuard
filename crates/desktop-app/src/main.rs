@@ -354,8 +354,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         .join(APPLICATION_DIRECTORY)
         .join(SETTINGS_FILE_NAME);
     let store = FileSettingsStore::new(settings_path);
-    let mut settings = store.load()?.sanitize();
+    let settings = store.load()?.sanitize();
 
+    #[cfg(windows)]
+    let mut settings = settings;
     #[cfg(windows)]
     let weixin_detection = detect_and_apply_running_weixin(&mut settings);
     #[cfg(windows)]
