@@ -38,8 +38,9 @@ pub use input::WindowsInputInjector;
 pub use startup::WindowsStartupRegistration;
 #[cfg(windows)]
 pub use trust::{
-    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust, is_valid_weixin_executable_path,
-    path_matches_trusted_weixin,
+    ProcessTrust, RunningWeixinExecutable, TRUSTED_WEIXIN_PATH, assess_window_trust,
+    discover_running_weixin_executable, is_valid_weixin_executable_path,
+    path_matches_configured_weixin, path_matches_trusted_weixin,
 };
 #[cfg(windows)]
 pub use window_placement::{

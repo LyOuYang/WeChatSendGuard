@@ -1,4 +1,5 @@
-use serde_json::json;
+use chrono::{DateTime, Local, SecondsFormat};
+use serde::Serialize;
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -20,6 +21,32 @@ const MIN_RETENTION_DAYS: u32 = 1;
 const MAX_RETENTION_DAYS: u32 = 30;
 const MAX_LOG_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_LOG_DIRECTORY_BYTES: u64 = 50 * 1024 * 1024;
+const AUDIT_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug)]
+struct AuditMetadata {
+    application_version: String,
+    weixin_version: String,
+    session_id: uuid::Uuid,
+    process_id: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SerializedAuditEntry<'a> {
+    local_time: String,
+    application_version: &'a str,
+    weixin_version: &'a str,
+    schema_version: u32,
+    session_id: String,
+    process_id: u32,
+    event_type: &'a str,
+    result: &'a str,
+    timestamp_unix_milliseconds: u128,
+    trace_id: Option<String>,
+    protected_chat_id: Option<String>,
+    details: std::collections::BTreeMap<String, String>,
+}
 
 enum AuditCommand {
     Entry(AuditEntry),
@@ -34,11 +61,21 @@ pub struct WindowsAuditLog {
     sender: Mutex<Option<SyncSender<AuditCommand>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     retention_days: Arc<AtomicU32>,
+    metadata: Arc<Mutex<AuditMetadata>>,
     log_directory: PathBuf,
 }
 
 impl WindowsAuditLog {
     pub fn new(log_directory: impl Into<PathBuf>, retention_days: u32) -> io::Result<Self> {
+        Self::new_with_versions(log_directory, retention_days, "unknown", None)
+    }
+
+    pub fn new_with_versions(
+        log_directory: impl Into<PathBuf>,
+        retention_days: u32,
+        application_version: impl Into<String>,
+        weixin_version: Option<String>,
+    ) -> io::Result<Self> {
         let log_directory = log_directory.into();
         fs::create_dir_all(&log_directory)?;
 
@@ -49,20 +86,37 @@ impl WindowsAuditLog {
             None,
         )?;
         let worker_retention = Arc::clone(&retention_days);
+        let metadata = Arc::new(Mutex::new(AuditMetadata {
+            application_version: application_version.into(),
+            weixin_version: weixin_version.unwrap_or_else(|| "未能读取".to_owned()),
+            session_id: uuid::Uuid::new_v4(),
+            process_id: std::process::id(),
+        }));
+        let worker_metadata = Arc::clone(&metadata);
         let (sender, receiver) = sync_channel(MAX_QUEUED_AUDIT_ENTRIES);
         let worker = thread::Builder::new()
             .name("wechat-send-guard-audit".to_owned())
             .spawn({
                 let log_directory = log_directory.clone();
-                move || worker_loop(receiver, &log_directory, worker_retention)
+                move || worker_loop(receiver, &log_directory, worker_retention, worker_metadata)
             })?;
 
         Ok(Self {
             sender: Mutex::new(Some(sender)),
             worker: Mutex::new(Some(worker)),
             retention_days,
+            metadata,
             log_directory,
         })
+    }
+
+    pub fn set_weixin_version(&self, weixin_version: Option<String>) {
+        lock_unpoisoned(&self.metadata).weixin_version =
+            weixin_version.unwrap_or_else(|| "未能读取".to_owned());
+    }
+
+    pub fn session_id(&self) -> uuid::Uuid {
+        lock_unpoisoned(&self.metadata).session_id
     }
 
     pub fn log_directory(&self) -> &Path {
@@ -142,12 +196,13 @@ fn worker_loop(
     receiver: std::sync::mpsc::Receiver<AuditCommand>,
     log_directory: &Path,
     retention_days: Arc<AtomicU32>,
+    metadata: Arc<Mutex<AuditMetadata>>,
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
             AuditCommand::Entry(entry) => {
                 let days = retention_days.load(Ordering::Acquire);
-                let _ = append_audit_entry(log_directory, &entry, days);
+                let _ = append_audit_entry(log_directory, &entry, days, &metadata);
             }
             AuditCommand::Flush(reply) => {
                 let _ = reply.send(Ok(()));
@@ -167,6 +222,7 @@ fn append_audit_entry(
     log_directory: &Path,
     entry: &AuditEntry,
     retention_days: u32,
+    metadata: &Mutex<AuditMetadata>,
 ) -> io::Result<()> {
     fs::create_dir_all(log_directory)?;
     let log_path = next_audit_log_path(log_directory)?;
@@ -174,13 +230,13 @@ fn append_audit_entry(
         .create(true)
         .append(true)
         .open(&log_path)?;
-    file.write_all(serialize_entry(entry).as_bytes())?;
+    file.write_all(serialize_entry(entry, metadata).as_bytes())?;
     file.write_all(b"\n")?;
     file.flush()?;
     enforce_retention_and_capacity(log_directory, retention_days, Some(&log_path))
 }
 
-fn serialize_entry(entry: &AuditEntry) -> String {
+fn serialize_entry(entry: &AuditEntry, metadata: &Mutex<AuditMetadata>) -> String {
     let timestamp_unix_milliseconds = entry
         .timestamp
         .duration_since(UNIX_EPOCH)
@@ -190,17 +246,27 @@ fn serialize_entry(entry: &AuditEntry) -> String {
         .details
         .iter()
         .filter(|(key, value)| is_safe_detail(key, value))
-        .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
-        .collect::<serde_json::Map<_, _>>();
-    json!({
-        "timestampUnixMilliseconds": timestamp_unix_milliseconds,
-        "traceId": entry.trace_id.map(|id| id.to_string()),
-        "protectedChatId": entry.protected_chat_id.map(|id| id.to_string()),
-        "eventType": entry.event_type,
-        "result": entry.result,
-        "details": details,
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let metadata = lock_unpoisoned(metadata);
+    let local_time: DateTime<Local> = entry.timestamp.into();
+    serde_json::to_string(&SerializedAuditEntry {
+        local_time: local_time.to_rfc3339_opts(SecondsFormat::Millis, false),
+        application_version: &metadata.application_version,
+        weixin_version: &metadata.weixin_version,
+        schema_version: AUDIT_SCHEMA_VERSION,
+        session_id: metadata.session_id.to_string(),
+        process_id: metadata.process_id,
+        event_type: &entry.event_type,
+        result: &entry.result,
+        timestamp_unix_milliseconds,
+        trace_id: entry.trace_id.map(|id| id.to_string()),
+        protected_chat_id: entry.protected_chat_id.map(|id| id.to_string()),
+        details,
     })
-    .to_string()
+    .unwrap_or_else(|_| {
+        "{\"eventType\":\"diagnostics\",\"result\":\"serialization-failed\"}".to_owned()
+    })
 }
 
 fn is_safe_detail(key: &str, value: &str) -> bool {
@@ -215,6 +281,53 @@ fn is_safe_detail(key: &str, value: &str) -> bool {
             | "trustedWeixinIdentity"
             | "releaseVersion"
             | "checkMode"
+            | "observationId"
+            | "diagnosticWindowMatchesContext"
+            | "foregroundProcessId"
+            | "processPathAvailable"
+            | "trustedWeixin"
+            | "requiresElevation"
+            | "uiaStatus"
+            | "uiaErrorCode"
+            | "uiaRootAvailable"
+            | "uiaRootClassName"
+            | "uiaRootControlType"
+            | "uiaRootChildCount"
+            | "uiaProviderKind"
+            | "uiaTreeQueryStatus"
+            | "uiaTreeErrorCode"
+            | "uiaTreeDescendantCount"
+            | "uiaTreeSampledCount"
+            | "uiaTreeSampleTruncated"
+            | "uiaTreeControlTypeCounts"
+            | "uiaTreeAutomationIdReadableCount"
+            | "uiaTreeAutomationIdNonemptyCount"
+            | "uiaTreeClassNameReadableCount"
+            | "uiaTreeClassNameNonemptyCount"
+            | "uiaTreePropertyReadFailureCount"
+            | "editorFound"
+            | "editorQueryStatus"
+            | "editorQueryErrorCode"
+            | "editorCandidateCount"
+            | "chatTitleElementFound"
+            | "chatTitleQueryStatus"
+            | "chatTitleQueryErrorCode"
+            | "chatTitleCandidateCount"
+            | "chatTitleReadable"
+            | "groupTitleFound"
+            | "groupTitleQueryStatus"
+            | "groupTitleQueryErrorCode"
+            | "groupTitleCandidateCount"
+            | "chatBranchFound"
+            | "editorFocused"
+            | "sendButtonInspected"
+            | "sendToolbarCount"
+            | "sendButtonCandidateCount"
+            | "sendButtonState"
+            | "uiaScanDurationMilliseconds"
+            | "contextCompatibilityAvailable"
+            | "contextGeneration"
+            | "contextAgeMilliseconds"
     ) && value.len() <= 256
         && !value.contains(['\r', '\n'])
 }
@@ -349,12 +462,13 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::{
         collections::BTreeMap,
+        sync::Mutex,
         time::{Duration, UNIX_EPOCH},
     };
 
     use super::{
-        WindowsAuditLog, audit_file_name, audit_log_files, clamp_retention, is_audit_log,
-        serialize_entry,
+        AuditMetadata, WindowsAuditLog, audit_file_name, audit_log_files, clamp_retention,
+        is_audit_log, serialize_entry,
     };
     use uuid::Uuid;
     use wechat_send_guard_core::AuditEntry;
@@ -371,13 +485,29 @@ mod tests {
         .with_trace_id(Uuid::nil());
         entry.details = BTreeMap::from([
             ("source".to_owned(), "enter".to_owned()),
+            ("uiaTreeQueryStatus".to_owned(), "query-failed".to_owned()),
+            (
+                "uiaTreeErrorCode".to_owned(),
+                "uia-tree-query-failed:0x80040201".to_owned(),
+            ),
             ("chatTitle".to_owned(), "绝不写入".to_owned()),
         ]);
-        let serialized = serialize_entry(&entry);
+        let metadata = Mutex::new(AuditMetadata {
+            application_version: "1.3.1".to_owned(),
+            weixin_version: "4.1.13.12".to_owned(),
+            session_id: Uuid::nil(),
+            process_id: 7,
+        });
+        let serialized = serialize_entry(&entry, &metadata);
 
+        assert!(serialized.starts_with("{\"localTime\":"));
+        assert!(serialized.contains("\"applicationVersion\":\"1.3.1\""));
+        assert!(serialized.contains("\"weixinVersion\":\"4.1.13.12\""));
         assert!(serialized.contains("timestampUnixMilliseconds"));
         assert!(serialized.contains("traceId"));
         assert!(serialized.contains("source"));
+        assert!(serialized.contains("uiaTreeQueryStatus"));
+        assert!(serialized.contains("uia-tree-query-failed:0x80040201"));
         assert!(!serialized.contains("chatTitle"));
         assert!(!serialized.contains("draft"));
     }

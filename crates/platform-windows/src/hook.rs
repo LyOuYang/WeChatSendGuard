@@ -9,7 +9,9 @@ use wechat_send_guard_platform_api::{PlatformError, PlatformResult};
 use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     UI::{
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_RETURN, VK_SHIFT},
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
+        },
         WindowsAndMessaging::{
             CallNextHookEx, GetForegroundWindow, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
             LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, SetWindowsHookExW, UnhookWindowsHookEx,
@@ -34,6 +36,7 @@ pub struct KeyboardStroke {
     pub is_numpad_enter: bool,
     pub is_injected: bool,
     pub shift_pressed: bool,
+    pub modifier_pressed: bool,
     pub foreground_window: isize,
 }
 
@@ -363,11 +366,17 @@ fn handle_key_down(state: &HookState, data: KBDLLHOOKSTRUCT, key: KeyboardKey) -
     // SAFETY: these APIs read transient system keyboard/foreground state and retain no data.
     let foreground_window = unsafe { GetForegroundWindow().0 as isize };
     let shift_pressed = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0;
+    let modifier_pressed = shift_pressed
+        || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } < 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) } < 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_LWIN.0)) } < 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_RWIN.0)) } < 0;
     let stroke = KeyboardStroke {
         key,
         is_numpad_enter: key == KeyboardKey::Enter && data.flags.contains(LLKHF_EXTENDED),
         is_injected,
         shift_pressed,
+        modifier_pressed,
         foreground_window,
     };
 
@@ -438,6 +447,7 @@ mod tests {
             is_numpad_enter: true,
             is_injected: false,
             shift_pressed: false,
+            modifier_pressed: false,
             foreground_window: 42,
         };
         assert!(stroke.is_numpad_enter);

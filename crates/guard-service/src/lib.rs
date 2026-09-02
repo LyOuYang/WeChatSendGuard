@@ -26,6 +26,8 @@ pub struct PhysicalEnter {
     pub is_numpad_enter: bool,
     pub is_injected: bool,
     pub shift_pressed: bool,
+    /// True when Enter is combined with any recognized modifier, including Shift.
+    pub modifier_pressed: bool,
     pub foreground_window: isize,
 }
 
@@ -52,6 +54,7 @@ pub struct GuardService {
     injector: Arc<dyn InputInjector>,
     audit_log: Arc<dyn AuditLog>,
     active_confirmation: Mutex<Option<uuid::Uuid>>,
+    pause_until: Mutex<Option<SystemTime>>,
 }
 
 impl GuardService {
@@ -69,6 +72,7 @@ impl GuardService {
             injector,
             audit_log,
             active_confirmation: Mutex::new(None),
+            pause_until: Mutex::new(None),
         }
     }
 
@@ -94,6 +98,9 @@ impl GuardService {
         }
 
         let settings = self.settings();
+        if !settings.enabled || self.is_paused(now) {
+            return EnterHandling::PassThrough;
+        }
         let context = self.platform.current();
         // The physical hook observes all applications. Keep diagnostics scoped to a cached,
         // trusted Weixin context so normal typing in unrelated applications never becomes a
@@ -104,6 +111,7 @@ impl GuardService {
         if !settings.intercept_keyboard_enter
             || (enter.is_numpad_enter && !settings.intercept_numpad_enter)
             || (settings.shift_enter_pass_through && enter.shift_pressed)
+            || enter.modifier_pressed
         {
             self.write_trace(
                 None,
@@ -282,7 +290,7 @@ impl GuardService {
     ) -> EnterHandling {
         let source = "send-button";
         let settings = self.settings();
-        if !settings.enabled || !settings.intercept_send_button {
+        if !settings.enabled || self.is_paused(now) || !settings.intercept_send_button {
             self.write_trace(
                 None,
                 trace_id,
@@ -508,6 +516,19 @@ impl GuardService {
             };
         }
 
+        if self.is_paused(now) {
+            self.write_audit(
+                pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
+                "send",
+                "cancelled-protection-paused",
+                now,
+            );
+            return CompletionResult::NotInjected {
+                reason: "Send protection is temporarily paused.".to_owned(),
+            };
+        }
+
         match self.injector.send_enter(pending.is_numpad_enter) {
             Ok(()) => {
                 self.write_audit(
@@ -573,7 +594,7 @@ impl GuardService {
     }
 
     pub fn try_grant_current_bypass(&self, minutes: u32, now: SystemTime) -> Option<ProtectedChat> {
-        if !matches!(minutes, 1 | 5 | 15) {
+        if !is_temporary_duration(minutes) || self.is_paused(now) {
             return None;
         }
         let context = self.platform.current();
@@ -596,6 +617,67 @@ impl GuardService {
             now,
         );
         Some(protected_chat)
+    }
+
+    /// Temporarily disables all send protection without changing the persisted setting. The
+    /// caller is responsible for disabling platform observation while this state is active.
+    pub fn try_pause(&self, minutes: u32, now: SystemTime) -> bool {
+        if !is_temporary_duration(minutes) || !self.settings().enabled {
+            return false;
+        }
+
+        *lock_unpoisoned(&self.pause_until) =
+            Some(now + Duration::from_secs(u64::from(minutes) * 60));
+        if let Some(pending) = self.state_machine.current() {
+            self.state_machine.cancel_active();
+            self.clear_active_confirmation(pending.attempt_id);
+            self.write_audit(
+                pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
+                "confirmation",
+                "cancelled-protection-paused",
+                now,
+            );
+        }
+        self.write_audit(
+            None,
+            None,
+            "protection-pause",
+            format!("granted-{minutes}m"),
+            now,
+        );
+        true
+    }
+
+    pub fn pause_remaining(&self, now: SystemTime) -> Option<Duration> {
+        let expires_at = lock_unpoisoned(&self.pause_until).as_ref().copied()?;
+        expires_at
+            .duration_since(now)
+            .ok()
+            .filter(|remaining| !remaining.is_zero())
+    }
+
+    pub fn resume_pause(&self, now: SystemTime) -> bool {
+        let expires_at = lock_unpoisoned(&self.pause_until).take();
+        let was_active = expires_at.is_some_and(|expires_at| expires_at > now);
+        if was_active {
+            self.write_audit(None, None, "protection-pause", "resumed-manual", now);
+        }
+        was_active
+    }
+
+    pub fn expire_pause(&self, now: SystemTime) -> bool {
+        let mut pause_until = lock_unpoisoned(&self.pause_until);
+        let expired = pause_until.is_some_and(|expires_at| expires_at <= now);
+        if expired {
+            *pause_until = None;
+            self.write_audit(None, None, "protection-pause", "resumed-timeout", now);
+        }
+        expired
+    }
+
+    pub fn is_paused(&self, now: SystemTime) -> bool {
+        self.pause_remaining(now).is_some()
     }
 
     pub fn current_pending_confirmation(&self) -> Option<PendingConfirmation> {
@@ -637,10 +719,19 @@ impl GuardService {
         source: &str,
         timestamp: SystemTime,
     ) {
+        let result = result.into();
+        let mut details =
+            std::collections::BTreeMap::from([("source".to_owned(), source.to_owned())]);
+        if result == "context-unavailable"
+            && let Some(diagnostics) = self.platform.current_diagnostics()
+        {
+            let context = self.platform.current();
+            details.extend(diagnostics.audit_details(&context, timestamp));
+        }
         self.audit_log.write(
             AuditEntry::new(timestamp, protected_chat_id, event_type, result)
                 .with_trace_id(trace_id)
-                .with_details([("source", source)]),
+                .with_details(details),
         );
     }
 }
@@ -669,6 +760,10 @@ fn context_is_stale(context: &ChatContext, now: SystemTime) -> bool {
         // `now`; that is fresher, not stale.
         Err(error) => error.duration() > MAX_CONTEXT_FUTURE_LEAD,
     }
+}
+
+fn is_temporary_duration(minutes: u32) -> bool {
+    matches!(minutes, 1 | 5 | 15)
 }
 
 fn outcome_name(outcome: ConfirmationOutcome) -> &'static str {

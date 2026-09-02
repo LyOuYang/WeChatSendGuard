@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 REPOSITORY_ROOT="$(cd "$SCRIPT_DIRECTORY/../.." && pwd)"
 PRODUCT_VERSION="$(tr -d '[:space:]' < "$REPOSITORY_ROOT/VERSION")"
+BASE_VERSION="$PRODUCT_VERSION"
+BASE_VERSION="${BASE_VERSION%%-*}"
+BASE_VERSION="${BASE_VERSION%%+*}"
 DIST_DIRECTORY="$REPOSITORY_ROOT/dist/macos"
 APP_DIRECTORY="$DIST_DIRECTORY/WeChatSendGuard.app"
 APP_CONTENTS="$APP_DIRECTORY/Contents"
@@ -11,11 +14,20 @@ APP_EXECUTABLE="$APP_CONTENTS/MacOS/WeChatSendGuard"
 BUILD_TOOL="${CARGO:-cargo}"
 SIGNING_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"
 BUILD_KIND="${MACOS_BUILD_KIND:-apple-silicon}"
+NOTARY_API_KEY_PATH="${MACOS_NOTARY_API_KEY_PATH:-}"
+NOTARY_KEY_ID="${MACOS_NOTARY_KEY_ID:-}"
+NOTARY_ISSUER_ID="${MACOS_NOTARY_ISSUER_ID:-}"
 TEMPORARY_DIRECTORY="$(mktemp -d /tmp/WeChatSendGuard-macos.XXXXXX)"
 trap 'rm -rf "$TEMPORARY_DIRECTORY"' EXIT
 
-if [[ ! "$PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! "$PRODUCT_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
     echo "VERSION must be SemVer, got: $PRODUCT_VERSION" >&2
+    exit 1
+fi
+
+BUILD_VERSION="${MACOS_BUILD_VERSION:-${GITHUB_RUN_NUMBER:-1}}"
+if [[ ! "$BUILD_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    echo "MACOS_BUILD_VERSION must contain only one to three numeric components, got: $BUILD_VERSION" >&2
     exit 1
 fi
 
@@ -33,6 +45,7 @@ case "$BUILD_KIND" in
 esac
 
 DISK_IMAGE="$DIST_DIRECTORY/WeChatSendGuard-${PRODUCT_VERSION}-${PACKAGE_ARCHITECTURE}.dmg"
+DISK_IMAGE_NAME="$(basename "$DISK_IMAGE")"
 
 cd "$REPOSITORY_ROOT"
 "$BUILD_TOOL" fmt --all -- --check
@@ -54,7 +67,10 @@ else
     cp "$REPOSITORY_ROOT/target/aarch64-apple-darwin/release/WeChatSendGuard" \
         "$APP_EXECUTABLE"
 fi
-sed "s/__VERSION__/$PRODUCT_VERSION/g" "$SCRIPT_DIRECTORY/Info.plist.in" > "$APP_CONTENTS/Info.plist"
+sed \
+    -e "s/__SHORT_VERSION__/$BASE_VERSION/g" \
+    -e "s/__BUILD_VERSION__/$BUILD_VERSION/g" \
+    "$SCRIPT_DIRECTORY/Info.plist.in" > "$APP_CONTENTS/Info.plist"
 chmod 755 "$APP_EXECUTABLE"
 
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
@@ -78,11 +94,22 @@ else
     codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DISK_IMAGE"
 fi
 
-if [[ -n "${MACOS_NOTARY_KEYCHAIN_PROFILE:-}" && "$SIGNING_IDENTITY" != "-" ]]; then
-    xcrun notarytool submit "$DISK_IMAGE" \
-        --keychain-profile "$MACOS_NOTARY_KEYCHAIN_PROFILE" --wait
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    if [[ -n "$NOTARY_API_KEY_PATH" && -n "$NOTARY_KEY_ID" && -n "$NOTARY_ISSUER_ID" ]]; then
+        xcrun notarytool submit "$DISK_IMAGE" \
+            --key "$NOTARY_API_KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait
+    elif [[ -n "${MACOS_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
+        xcrun notarytool submit "$DISK_IMAGE" \
+            --keychain-profile "$MACOS_NOTARY_KEYCHAIN_PROFILE" --wait
+    else
+        echo "Production signing requires App Store Connect API key or keychain profile." >&2
+        exit 1
+    fi
     xcrun stapler staple "$DISK_IMAGE"
 fi
 
-shasum -a 256 "$DISK_IMAGE" > "$DISK_IMAGE.sha256"
+(cd "$DIST_DIRECTORY" && shasum -a 256 "$DISK_IMAGE_NAME") > "$DISK_IMAGE.sha256"
+(cd "$DIST_DIRECTORY" && shasum -a 256 -c "$DISK_IMAGE_NAME.sha256")
 echo "Created $DISK_IMAGE"

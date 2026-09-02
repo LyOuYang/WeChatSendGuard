@@ -37,6 +37,7 @@ typedef bool (*WSGMacKeyboardCallback)(
     uint16_t key_code,
     bool is_injected,
     bool shift_pressed,
+    bool modifier_pressed,
     void *context
 );
 typedef bool (*WSGMacMouseCallback)(int32_t screen_x, int32_t screen_y, void *context);

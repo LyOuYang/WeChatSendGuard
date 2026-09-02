@@ -1,0 +1,199 @@
+name: Release Windows and macOS packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable or beta tag to build (for example v1.3.2-beta.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.92.0
+
+jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      source_branch: ${{ steps.release.outputs.source_branch }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
+          fetch-depth: 0
+      - name: Validate tag, version, channel, and source branch
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            channel="beta"
+            source_branch="dev"
+            prerelease="true"
+          elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel="stable"
+            source_branch="main"
+            prerelease="false"
+          else
+            echo "Unsupported release tag: $tag" >&2
+            exit 1
+          fi
+
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$tag" == "v$version" ]] || { echo "Tag $tag does not match VERSION $version" >&2; exit 1; }
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "wechat-send-guard") | .version')"
+          [[ "$cargo_version" == "$version" ]] || { echo "Cargo version $cargo_version does not match VERSION $version" >&2; exit 1; }
+          git fetch origin --no-tags "+refs/heads/$source_branch:refs/remotes/origin/$source_branch"
+          git merge-base --is-ancestor HEAD "origin/$source_branch" || {
+            echo "Tag $tag must point to a commit on origin/$source_branch" >&2
+            exit 1
+          }
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "source_branch=$source_branch"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows ${{ needs.validate.outputs.channel }} package
+    runs-on: windows-2022
+    needs: validate
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress --limit-output
+      - name: Check formatting, lint, and tests
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Build Windows installer
+        shell: pwsh
+        run: .\packaging\windows\build-installer.ps1
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-windows-x64
+          path: |
+            dist/windows/*.exe
+            dist/windows/*.exe.sha256
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ needs.validate.outputs.channel }} package (Ad-hoc)
+    runs-on: macos-14
+    needs: validate
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt, clippy
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting, lint, and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Build Ad-hoc signed universal DMG
+        env:
+          MACOS_BUILD_KIND: universal
+          MACOS_CODESIGN_IDENTITY: "-"
+        run: ./packaging/macos/build-app.sh
+      - name: Upload macOS release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-macos-universal
+          path: |
+            dist/macos/*.dmg
+            dist/macos/*.dmg.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish unified GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [validate, windows, macos]
+    environment:
+      name: ${{ needs.validate.outputs.channel == 'stable' && 'production' || 'beta' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-windows-x64
+          path: dist/windows
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.validate.outputs.channel }}-${{ needs.validate.outputs.tag }}-macos-universal
+          path: dist/macos
+      - name: Validate release assets and checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          win="dist/windows/WeChatSendGuard-Setup-$VERSION.exe"
+          dmg="dist/macos/WeChatSendGuard-$VERSION-universal.dmg"
+          test -f "$win" && test -f "$win.sha256"
+          test -f "$dmg" && test -f "$dmg.sha256"
+          (cd dist/windows && sha256sum -c "WeChatSendGuard-Setup-$VERSION.exe.sha256")
+          (cd dist/macos && shasum -a 256 -c "WeChatSendGuard-$VERSION-universal.dmg.sha256")
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: WeChatSendGuard ${{ needs.validate.outputs.tag }}${{ needs.validate.outputs.channel == 'beta' && ' (Beta)' || '' }}
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.validate.outputs.channel == 'stable' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/windows/WeChatSendGuard-Setup-${{ needs.validate.outputs.version }}.exe
+            dist/windows/WeChatSendGuard-Setup-${{ needs.validate.outputs.version }}.exe.sha256
+            dist/macos/WeChatSendGuard-${{ needs.validate.outputs.version }}-universal.dmg
+            dist/macos/WeChatSendGuard-${{ needs.validate.outputs.version }}-universal.dmg.sha256

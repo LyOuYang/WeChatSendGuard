@@ -1,0 +1,89 @@
+name: CI and branch builds
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.92.0
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting, lint, and tests
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress --limit-output
+      - name: Build Windows installer
+        shell: pwsh
+        run: .\packaging\windows\build-installer.ps1
+      - name: Upload Windows candidate
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-send-guard-${{ github.sha }}-windows-x64
+          path: |
+            dist/windows/*.exe
+            dist/windows/*.exe.sha256
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal package
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: rustfmt, clippy
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting, lint, and tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Build macOS universal DMG
+        env:
+          MACOS_BUILD_KIND: universal
+        run: ./packaging/macos/build-app.sh
+      - name: Upload macOS candidate
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-send-guard-${{ github.sha }}-macos-universal
+          path: |
+            dist/macos/*.dmg
+            dist/macos/*.dmg.sha256
+          if-no-files-found: error

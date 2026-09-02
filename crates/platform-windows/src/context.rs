@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
@@ -9,7 +10,7 @@ use std::{
 };
 use wechat_send_guard_core::{ChatContext, ChatTargetKind, SendGuardStateMachine};
 use wechat_send_guard_platform_api::{
-    ChatContextProvider, PlatformError, PlatformResult, SendTargetPlatform,
+    ChatContextProvider, ContextDiagnostics, PlatformError, PlatformResult, SendTargetPlatform,
 };
 use windows::Win32::{
     Foundation::{HWND, LPARAM, RECT, RPC_E_CHANGED_MODE, WPARAM},
@@ -23,10 +24,10 @@ use windows::Win32::{
         Accessibility::{
             CUIAutomation, HWINEVENTHOOK, IUIAutomation, IUIAutomationElement,
             IUIAutomationTextPattern, IUIAutomationValuePattern,
-            PropertyConditionFlags_MatchSubstring, SetWinEventHook, TreeScope_Descendants,
-            UIA_AutomationIdPropertyId, UIA_ButtonControlTypeId, UIA_ClassNamePropertyId,
-            UIA_ControlTypePropertyId, UIA_NamePropertyId, UIA_TextPatternId, UIA_ValuePatternId,
-            UnhookWinEvent,
+            PropertyConditionFlags_MatchSubstring, SetWinEventHook, TreeScope_Children,
+            TreeScope_Descendants, UIA_AutomationIdPropertyId, UIA_ButtonControlTypeId,
+            UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_NamePropertyId,
+            UIA_TextPatternId, UIA_ValuePatternId, UnhookWinEvent,
         },
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
@@ -41,8 +42,7 @@ use windows::Win32::{
 };
 
 use crate::trust::{
-    ProcessTrust, TRUSTED_WEIXIN_PATH, assess_window_trust_for_executable,
-    is_valid_weixin_executable_path,
+    ProcessTrust, assess_window_trust_for_executable, is_valid_weixin_executable_path,
 };
 
 const INPUT_AUTOMATION_ID: &str = "chat_input_field";
@@ -172,6 +172,20 @@ struct PublishedSnapshot {
     send_button: SendButtonSnapshot,
 }
 
+#[derive(Debug, Default)]
+struct SendButtonInspection {
+    toolbar_count: Option<usize>,
+    candidate_count: Option<usize>,
+    error_code: Option<String>,
+}
+
+#[derive(Debug)]
+struct WindowInspection {
+    context: ChatContext,
+    send_button: SendButtonSnapshot,
+    diagnostics: ContextDiagnostics,
+}
+
 /// Content-free result of matching a physical click against the cached Weixin send-button
 /// snapshot. It is also written to the audit log to explain why a click was or was not blocked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +230,7 @@ pub struct WindowsContextProvider {
     /// Context and send-button data are published as one immutable value. A hook therefore can
     /// never observe a new window context paired with an old button rectangle.
     current: RwLock<Arc<PublishedSnapshot>>,
+    current_diagnostics: RwLock<ContextDiagnostics>,
     observation_sequence: AtomicU64,
     observation_enabled: Arc<AtomicBool>,
     keyboard_enter_observation_enabled: Arc<AtomicBool>,
@@ -245,8 +260,8 @@ impl WindowsContextProvider {
         Self::new_with_trusted_weixin_executable_path(None)
     }
 
-    /// Creates a provider with the optional per-user Windows path override. `None` uses the
-    /// supported installation path and an invalid configured value cannot match a process.
+    /// Creates a provider with the optional auto-detected Windows executable path. Without a
+    /// detected path no process is trusted until the application discovers a running Weixin.
     pub fn new_with_trusted_weixin_executable_path(configured_path: Option<&str>) -> Self {
         Self {
             current: RwLock::new(Arc::new(PublishedSnapshot {
@@ -254,6 +269,7 @@ impl WindowsContextProvider {
                 context: ChatContext::default(),
                 send_button: SendButtonSnapshot::not_observed(0, None),
             })),
+            current_diagnostics: RwLock::new(ContextDiagnostics::default()),
             observation_sequence: AtomicU64::new(0),
             observation_enabled: Arc::new(AtomicBool::new(true)),
             keyboard_enter_observation_enabled: Arc::new(AtomicBool::new(true)),
@@ -369,11 +385,21 @@ impl WindowsContextProvider {
                 is_trusted_weixin: false,
                 requires_elevation: false,
             });
+        let mut diagnostics = diagnostics_from_trust(
+            observation_id,
+            window_handle,
+            &trust,
+            self.send_button_observation_enabled(),
+        );
 
-        let (mut candidate, mut send_button, observation_completed) = if !trust.is_trusted_weixin {
+        let (mut candidate, mut send_button, mut diagnostics, observation_completed) = if !trust
+            .is_trusted_weixin
+        {
+            diagnostics.query_status = "not-queried-untrusted-window".to_owned();
             (
                 context_from_trust(window_handle, trust, scan_started_at),
                 SendButtonSnapshot::not_observed(window_handle, Some(scan_started_at)),
+                diagnostics,
                 true,
             )
         } else {
@@ -409,6 +435,8 @@ impl WindowsContextProvider {
                 SendButtonSnapshot::not_observed(window_handle, None)
             };
             drop(previous);
+            diagnostics.query_status = "query-in-progress".to_owned();
+            self.publish_diagnostics(diagnostics.clone());
             self.publish_with_button_for_observation(
                 provisional_context,
                 provisional_button,
@@ -419,15 +447,19 @@ impl WindowsContextProvider {
 
             let inspect_send_button = self.send_button_observation_enabled();
             match inspect_supported_weixin_window(
+                observation_id,
                 window_handle,
                 trust.clone(),
                 scan_started_at,
                 inspect_send_button,
             ) {
-                Ok((candidate, send_button)) if candidate.is_compatibility_available => {
-                    (candidate, send_button, true)
-                }
-                Ok((candidate, send_button)) => {
+                Ok(inspection) if inspection.context.is_compatibility_available => (
+                    inspection.context,
+                    inspection.send_button,
+                    inspection.diagnostics,
+                    true,
+                ),
+                Ok(inspection) => {
                     // Weixin's three-pane provider can return a technically successful query
                     // while temporarily omitting the editor/title nodes. Treat that as an
                     // incomplete observation, not as proof that the current chat disappeared.
@@ -437,12 +469,22 @@ impl WindowsContextProvider {
                     let same_window_recognized = previous_context.window_handle == window_handle
                         && is_recognized_chat(&previous_context);
                     if same_window_recognized {
-                        (previous_context.clone(), send_button, false)
+                        (
+                            previous_context.clone(),
+                            inspection.send_button,
+                            inspection.diagnostics,
+                            false,
+                        )
                     } else {
-                        (candidate, send_button, true)
+                        (
+                            inspection.context,
+                            inspection.send_button,
+                            inspection.diagnostics,
+                            true,
+                        )
                     }
                 }
-                Err(_) => {
+                Err(error) => {
                     // Keep the last same-window identity during a transient UIA failure. Its old
                     // timestamp deliberately remains stale, so the service can open a confirmation
                     // and the final focus/target revalidation still decides whether to inject.
@@ -467,7 +509,11 @@ impl WindowsContextProvider {
                     } else {
                         SendButtonSnapshot::not_observed(window_handle, None)
                     };
-                    (candidate, send_button, false)
+                    diagnostics.query_status = "query-failed".to_owned();
+                    diagnostics.error_code = Some(diagnostic_error_code(&error));
+                    diagnostics.scan_duration_milliseconds =
+                        scan_started_at.elapsed().unwrap_or_default().as_millis();
+                    (candidate, send_button, diagnostics, false)
                 }
             }
         };
@@ -498,21 +544,34 @@ impl WindowsContextProvider {
                     requires_elevation: false,
                 });
             let latest_observed_at = SystemTime::now();
-            return self.publish_with_button_for_observation(
+            let mut latest_diagnostics = diagnostics_from_trust(
+                observation_id,
+                latest_window_handle,
+                &latest_trust,
+                self.send_button_observation_enabled(),
+            );
+            latest_diagnostics.query_status = "not-queried-foreground-changed".to_owned();
+            let published = self.publish_with_button_for_observation(
                 context_from_trust(latest_window_handle, latest_trust, latest_observed_at),
                 SendButtonSnapshot::not_observed(latest_window_handle, Some(latest_observed_at)),
                 trust_generation,
                 observation_id,
                 false,
             );
+            self.publish_diagnostics(latest_diagnostics);
+            return published;
         }
-        self.publish_with_button_for_observation(
+        let published = self.publish_with_button_for_observation(
             candidate,
             send_button,
             trust_generation,
             observation_id,
             true,
-        )
+        );
+        diagnostics.scan_duration_milliseconds =
+            scan_started_at.elapsed().unwrap_or_default().as_millis();
+        self.publish_diagnostics(diagnostics);
+        published
     }
 
     /// Reconciles the foreground window for the background monitor. WinEvent notifications pass
@@ -542,6 +601,13 @@ impl WindowsContextProvider {
         self.observation_sequence
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1)
+    }
+
+    fn publish_diagnostics(&self, diagnostics: ContextDiagnostics) {
+        let mut current = write_unpoisoned(&self.current_diagnostics);
+        if current.observation_id <= diagnostics.observation_id {
+            *current = diagnostics;
+        }
     }
 
     fn publish(&self, candidate: ChatContext, trust_generation: u64) -> ChatContext {
@@ -941,7 +1007,7 @@ fn rebase_snapshot_for_current_window(
 
 fn resolved_trusted_weixin_path(configured_path: Option<&str>) -> Option<PathBuf> {
     match configured_path {
-        None => Some(PathBuf::from(TRUSTED_WEIXIN_PATH)),
+        None => None,
         Some(value) => {
             let path = PathBuf::from(value.trim().trim_matches('"').trim());
             is_valid_weixin_executable_path(&path).then_some(path)
@@ -971,6 +1037,10 @@ impl ChatContextProvider for WindowsContextProvider {
 
     fn refresh_now(&self) -> PlatformResult<ChatContext> {
         Ok(self.refresh_foreground())
+    }
+
+    fn current_diagnostics(&self) -> Option<ContextDiagnostics> {
+        Some(read_unpoisoned(&self.current_diagnostics).clone())
     }
 }
 
@@ -1344,17 +1414,283 @@ impl Drop for WindowsContextMonitor {
     }
 }
 
+fn diagnostics_from_trust(
+    observation_id: u64,
+    window_handle: isize,
+    trust: &ProcessTrust,
+    inspect_send_button: bool,
+) -> ContextDiagnostics {
+    ContextDiagnostics {
+        observation_id,
+        window_handle,
+        process_id: trust.process_id,
+        process_path_available: !trust.process_path.is_empty(),
+        is_trusted_weixin: trust.is_trusted_weixin,
+        requires_elevation: trust.requires_elevation,
+        send_button_inspected: inspect_send_button,
+        ..ContextDiagnostics::default()
+    }
+}
+
+fn record_diagnostic_error(diagnostics: &mut ContextDiagnostics, error: &PlatformError) {
+    if diagnostics.error_code.is_none() {
+        diagnostics.error_code = Some(diagnostic_error_code(error));
+    }
+    diagnostics.query_status = "partial-query-failed".to_owned();
+}
+
+fn diagnostic_error_code(error: &PlatformError) -> String {
+    let platform_code = error.message.split_whitespace().find_map(|token| {
+        let token = token
+            .trim_matches(|character: char| !character.is_ascii_hexdigit() && character != 'x');
+        let value = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))?;
+        (value.len() >= 8
+            && value
+                .chars()
+                .take(8)
+                .all(|character| character.is_ascii_hexdigit()))
+        .then(|| format!("0x{}", &value[..8]))
+    });
+    platform_code.map_or_else(
+        || error.code.to_owned(),
+        |platform_code| format!("{}:{platform_code}", error.code),
+    )
+}
+
+fn diagnostic_query<T>(
+    result: PlatformResult<T>,
+    diagnostics: &mut ContextDiagnostics,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            record_diagnostic_error(diagnostics, &error);
+            None
+        }
+    }
+}
+
+fn query_anchor_with_diagnostics(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    property_id: windows::Win32::UI::Accessibility::UIA_PROPERTY_ID,
+    suffix: &str,
+    diagnostics: &mut ContextDiagnostics,
+) -> (
+    Option<IUIAutomationElement>,
+    String,
+    Option<usize>,
+    Option<String>,
+) {
+    let (fast_match, fast_error) = match find_property_suffix(automation, root, property_id, suffix)
+    {
+        Ok(element) => (element, None),
+        Err(error) => {
+            let code = diagnostic_error_code(&error);
+            record_diagnostic_error(diagnostics, &error);
+            (None, Some(code))
+        }
+    };
+    if fast_match.is_some() {
+        return (fast_match, "found-fast".to_owned(), None, fast_error);
+    }
+
+    match find_property_suffix_all(automation, root, property_id, suffix) {
+        Ok(matches) => {
+            let status = match (fast_error.is_some(), matches.is_empty()) {
+                (false, true) => "not-found",
+                (false, false) => "found-only-by-full-probe",
+                (true, true) => "fast-query-failed-full-probe-empty",
+                (true, false) => "fast-query-failed-full-probe-found",
+            };
+            (None, status.to_owned(), Some(matches.len()), fast_error)
+        }
+        Err(error) => {
+            let code = diagnostic_error_code(&error);
+            record_diagnostic_error(diagnostics, &error);
+            (None, "query-failed".to_owned(), None, Some(code))
+        }
+    }
+}
+
+fn capture_tree_diagnostics(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+    diagnostics: &mut ContextDiagnostics,
+) {
+    const MAX_SAMPLED_ELEMENTS: usize = 512;
+
+    let condition = match unsafe { automation.CreateTrueCondition() } {
+        Ok(condition) => condition,
+        Err(error) => {
+            let error = PlatformError::new("uia-tree-condition-failed", error.to_string());
+            diagnostics.tree_query_status = "condition-failed".to_owned();
+            diagnostics.tree_error_code = Some(diagnostic_error_code(&error));
+            record_diagnostic_error(diagnostics, &error);
+            return;
+        }
+    };
+    let elements = match unsafe { root.FindAll(TreeScope_Descendants, &condition) } {
+        Ok(elements) => elements,
+        Err(error) => {
+            let error = PlatformError::new("uia-tree-query-failed", error.to_string());
+            diagnostics.tree_query_status = "query-failed".to_owned();
+            diagnostics.tree_error_code = Some(diagnostic_error_code(&error));
+            record_diagnostic_error(diagnostics, &error);
+            return;
+        }
+    };
+    let length = match unsafe { elements.Length() } {
+        Ok(length) if length >= 0 => length as usize,
+        Ok(_) => 0,
+        Err(error) => {
+            let error = PlatformError::new("uia-tree-length-failed", error.to_string());
+            diagnostics.tree_query_status = "length-failed".to_owned();
+            diagnostics.tree_error_code = Some(diagnostic_error_code(&error));
+            record_diagnostic_error(diagnostics, &error);
+            return;
+        }
+    };
+
+    let sampled_count = length.min(MAX_SAMPLED_ELEMENTS);
+    let mut control_type_counts = BTreeMap::<i32, usize>::new();
+    let mut automation_id_readable_count = 0usize;
+    let mut automation_id_nonempty_count = 0usize;
+    let mut class_name_readable_count = 0usize;
+    let mut class_name_nonempty_count = 0usize;
+    let mut property_read_failure_count = 0usize;
+    let mut first_property_error = None;
+
+    for index in 0..sampled_count {
+        let element = match unsafe { elements.GetElement(index as i32) } {
+            Ok(element) => element,
+            Err(error) => {
+                property_read_failure_count = property_read_failure_count.saturating_add(1);
+                first_property_error.get_or_insert_with(|| {
+                    PlatformError::new("uia-tree-element-read-failed", error.to_string())
+                });
+                continue;
+            }
+        };
+        match unsafe { element.CurrentControlType() } {
+            Ok(control_type) => {
+                let count = control_type_counts.entry(control_type.0).or_default();
+                *count = count.saturating_add(1);
+            }
+            Err(error) => {
+                property_read_failure_count = property_read_failure_count.saturating_add(1);
+                first_property_error.get_or_insert_with(|| {
+                    PlatformError::new("uia-tree-control-type-read-failed", error.to_string())
+                });
+            }
+        }
+        match unsafe { element.CurrentAutomationId() } {
+            Ok(value) => {
+                automation_id_readable_count = automation_id_readable_count.saturating_add(1);
+                if !value.to_string().is_empty() {
+                    automation_id_nonempty_count = automation_id_nonempty_count.saturating_add(1);
+                }
+            }
+            Err(error) => {
+                property_read_failure_count = property_read_failure_count.saturating_add(1);
+                first_property_error.get_or_insert_with(|| {
+                    PlatformError::new("uia-tree-automation-id-read-failed", error.to_string())
+                });
+            }
+        }
+        match unsafe { element.CurrentClassName() } {
+            Ok(value) => {
+                class_name_readable_count = class_name_readable_count.saturating_add(1);
+                if !value.to_string().is_empty() {
+                    class_name_nonempty_count = class_name_nonempty_count.saturating_add(1);
+                }
+            }
+            Err(error) => {
+                property_read_failure_count = property_read_failure_count.saturating_add(1);
+                first_property_error.get_or_insert_with(|| {
+                    PlatformError::new("uia-tree-class-name-read-failed", error.to_string())
+                });
+            }
+        }
+    }
+
+    diagnostics.tree_query_status = if property_read_failure_count == 0 {
+        "success"
+    } else {
+        "partial-property-read-failure"
+    }
+    .to_owned();
+    diagnostics.tree_descendant_count = Some(length);
+    diagnostics.tree_sampled_count = Some(sampled_count);
+    diagnostics.tree_sample_truncated = length > sampled_count;
+    diagnostics.tree_control_type_counts = Some(
+        control_type_counts
+            .into_iter()
+            .take(16)
+            .map(|(control_type, count)| format!("{control_type}:{count}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    diagnostics.tree_automation_id_readable_count = Some(automation_id_readable_count);
+    diagnostics.tree_automation_id_nonempty_count = Some(automation_id_nonempty_count);
+    diagnostics.tree_class_name_readable_count = Some(class_name_readable_count);
+    diagnostics.tree_class_name_nonempty_count = Some(class_name_nonempty_count);
+    diagnostics.tree_property_read_failure_count = Some(property_read_failure_count);
+    if let Some(error) = first_property_error {
+        diagnostics.tree_error_code = Some(diagnostic_error_code(&error));
+        record_diagnostic_error(diagnostics, &error);
+    }
+}
+
 fn inspect_supported_weixin_window(
+    observation_id: u64,
     window_handle: isize,
     trust: ProcessTrust,
     observed_at: SystemTime,
     inspect_send_button: bool,
-) -> PlatformResult<(ChatContext, SendButtonSnapshot)> {
+) -> PlatformResult<WindowInspection> {
     with_automation(|automation| {
         let root = element_from_handle(automation, window_handle)?;
-        let editor = find_by_automation_id_suffix(automation, &root, INPUT_AUTOMATION_ID)?;
-        let title_element =
-            find_by_automation_id_suffix(automation, &root, CHAT_NAME_AUTOMATION_ID)?;
+        let mut diagnostics =
+            diagnostics_from_trust(observation_id, window_handle, &trust, inspect_send_button);
+        diagnostics.query_status = "success".to_owned();
+        diagnostics.root_available = true;
+        diagnostics.root_class_name = read_diagnostic_class_name(&root);
+        diagnostics.root_control_type = unsafe { root.CurrentControlType() }
+            .ok()
+            .map(|control_type| control_type.0);
+        diagnostics.provider_kind = classify_uia_provider(&root);
+        diagnostics.root_child_count =
+            diagnostic_query(root_direct_child_count(automation, &root), &mut diagnostics);
+
+        let (editor, editor_query_status, editor_candidate_count, editor_query_error_code) =
+            query_anchor_with_diagnostics(
+                automation,
+                &root,
+                UIA_AutomationIdPropertyId,
+                INPUT_AUTOMATION_ID,
+                &mut diagnostics,
+            );
+        diagnostics.editor_query_status = editor_query_status;
+        diagnostics.editor_candidate_count = editor_candidate_count;
+        diagnostics.editor_query_error_code = editor_query_error_code;
+        let (
+            title_element,
+            chat_title_query_status,
+            chat_title_candidate_count,
+            chat_title_query_error_code,
+        ) = query_anchor_with_diagnostics(
+            automation,
+            &root,
+            UIA_AutomationIdPropertyId,
+            CHAT_NAME_AUTOMATION_ID,
+            &mut diagnostics,
+        );
+        diagnostics.chat_title_query_status = chat_title_query_status;
+        diagnostics.chat_title_candidate_count = chat_title_candidate_count;
+        diagnostics.chat_title_query_error_code = chat_title_query_error_code;
         // The editor and current-title label are stable anchors shared by both layouts. Their
         // nearest common ancestor is the chat column, so toolbar/button queries below never enter
         // a sibling web-view branch in three-pane Weixin.
@@ -1366,8 +1702,21 @@ fn inspect_supported_weixin_window(
         let chat_root = chat_branch.as_ref().unwrap_or(&root);
         // Some older providers omit the title automation id but still expose the stable group
         // title-bar class. Keep that compatibility signal inside the selected branch.
-        let group_title =
-            find_by_class_name_suffix(automation, chat_root, GROUP_TITLE_CLASS_SUFFIX)?;
+        let (
+            group_title,
+            group_title_query_status,
+            group_title_candidate_count,
+            group_title_query_error_code,
+        ) = query_anchor_with_diagnostics(
+            automation,
+            chat_root,
+            UIA_ClassNamePropertyId,
+            GROUP_TITLE_CLASS_SUFFIX,
+            &mut diagnostics,
+        );
+        diagnostics.group_title_query_status = group_title_query_status;
+        diagnostics.group_title_candidate_count = group_title_candidate_count;
+        diagnostics.group_title_query_error_code = group_title_query_error_code;
         let chat_title = title_element.as_ref().and_then(read_name);
         let is_group_chat = group_title.is_some()
             || title_element.as_ref().is_some_and(|title| {
@@ -1387,6 +1736,17 @@ fn inspect_supported_weixin_window(
             .as_ref()
             .map(|editor| is_editor_focused(automation, editor, &root))
             .unwrap_or(false);
+        diagnostics.editor_found = editor.is_some();
+        diagnostics.chat_title_element_found = title_element.is_some();
+        diagnostics.chat_title_readable = chat_title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty());
+        diagnostics.group_title_found = group_title.is_some();
+        diagnostics.chat_branch_found = chat_branch.is_some();
+        diagnostics.editor_focused = is_message_editor_focused;
+        if editor.is_none() || title_element.is_none() || target_kind.is_none() {
+            capture_tree_diagnostics(automation, &root, &mut diagnostics);
+        }
 
         let editor_bounds = editor.as_ref().and_then(|editor| {
             // SAFETY: the editor proxy is live for the duration of this synchronous read.
@@ -1394,7 +1754,7 @@ fn inspect_supported_weixin_window(
                 .ok()
                 .and_then(ScreenRect::from_windows_rect)
         });
-        let send_button = if inspect_send_button {
+        let (send_button, send_button_inspection) = if inspect_send_button {
             find_send_button_snapshot(
                 automation,
                 chat_root,
@@ -1403,11 +1763,38 @@ fn inspect_supported_weixin_window(
                 editor_bounds,
             )
         } else {
-            SendButtonSnapshot::not_observed(window_handle, Some(observed_at))
+            (
+                SendButtonSnapshot::not_observed(window_handle, Some(observed_at)),
+                SendButtonInspection::default(),
+            )
         };
+        diagnostics.toolbar_count = send_button_inspection.toolbar_count;
+        diagnostics.send_button_candidate_count = send_button_inspection.candidate_count;
+        if diagnostics.error_code.is_none() {
+            diagnostics.error_code = send_button_inspection.error_code;
+        }
+        if diagnostics.error_code.is_some() {
+            diagnostics.query_status = "partial-query-failed".to_owned();
+        }
+        diagnostics.send_button_state =
+            send_button_snapshot_state_name(send_button.state).to_owned();
+        if diagnostics.tree_query_status == "not-queried"
+            && inspect_send_button
+            && matches!(
+                send_button.state,
+                SendButtonSnapshotState::QueryFailed
+                    | SendButtonSnapshotState::NotFound
+                    | SendButtonSnapshotState::StateUnavailable
+                    | SendButtonSnapshotState::GeometryUnavailable
+            )
+        {
+            capture_tree_diagnostics(automation, &root, &mut diagnostics);
+        }
+        diagnostics.scan_duration_milliseconds =
+            observed_at.elapsed().unwrap_or_default().as_millis();
 
-        Ok((
-            ChatContext {
+        Ok(WindowInspection {
+            context: ChatContext {
                 window_handle,
                 process_id: trust.process_id,
                 process_path: trust.process_path,
@@ -1422,8 +1809,55 @@ fn inspect_supported_weixin_window(
                 observed_at: Some(observed_at),
             },
             send_button,
-        ))
+            diagnostics,
+        })
     })
+}
+
+fn root_direct_child_count(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+) -> PlatformResult<i32> {
+    let condition = unsafe { automation.CreateTrueCondition() }
+        .map_err(|error| PlatformError::new("uia-condition-failed", error.to_string()))?;
+    let children = unsafe { root.FindAll(TreeScope_Children, &condition) }
+        .map_err(|error| PlatformError::new("uia-root-children-query-failed", error.to_string()))?;
+    unsafe { children.Length() }
+        .map_err(|error| PlatformError::new("uia-root-children-query-failed", error.to_string()))
+}
+
+fn read_diagnostic_class_name(root: &IUIAutomationElement) -> Option<String> {
+    let value = unsafe { root.CurrentClassName() }.ok()?.to_string();
+    let normalized = value.replace(['\r', '\n'], " ");
+    (!normalized.is_empty()).then(|| normalized.chars().take(128).collect())
+}
+
+fn classify_uia_provider(root: &IUIAutomationElement) -> String {
+    let Ok(description) = (unsafe { root.CurrentProviderDescription() }) else {
+        return "unavailable".to_owned();
+    };
+    let description = description.to_string().to_ascii_lowercase();
+    if description.contains("qt") {
+        "qt".to_owned()
+    } else if description.contains("msaa") {
+        "msaa-proxy".to_owned()
+    } else if description.contains("native") || description.contains("hwnd") {
+        "native-window-proxy".to_owned()
+    } else {
+        "other".to_owned()
+    }
+}
+
+fn send_button_snapshot_state_name(state: SendButtonSnapshotState) -> &'static str {
+    match state {
+        SendButtonSnapshotState::NotObserved => "not-observed",
+        SendButtonSnapshotState::QueryFailed => "query-failed",
+        SendButtonSnapshotState::NotFound => "not-found",
+        SendButtonSnapshotState::Disabled => "disabled",
+        SendButtonSnapshotState::Enabled => "enabled",
+        SendButtonSnapshotState::StateUnavailable => "state-unavailable",
+        SendButtonSnapshotState::GeometryUnavailable => "geometry-unavailable",
+    }
 }
 
 fn context_from_trust(
@@ -1527,14 +1961,6 @@ fn find_by_automation_id_suffix(
     suffix: &str,
 ) -> PlatformResult<Option<IUIAutomationElement>> {
     find_property_suffix(automation, root, UIA_AutomationIdPropertyId, suffix)
-}
-
-fn find_by_class_name_suffix(
-    automation: &IUIAutomation,
-    root: &IUIAutomationElement,
-    suffix: &str,
-) -> PlatformResult<Option<IUIAutomationElement>> {
-    find_property_suffix(automation, root, UIA_ClassNamePropertyId, suffix)
 }
 
 /// UIA's condition engine can locate an element without materializing every descendant and then
@@ -1718,7 +2144,8 @@ fn find_send_button_snapshot(
     window_handle: isize,
     observed_at: SystemTime,
     editor_bounds: Option<ScreenRect>,
-) -> SendButtonSnapshot {
+) -> (SendButtonSnapshot, SendButtonInspection) {
+    let mut inspection = SendButtonInspection::default();
     let base = SendButtonSnapshot {
         window_handle,
         observed_at: Some(observed_at),
@@ -1738,13 +2165,18 @@ fn find_send_button_snapshot(
     ) {
         Ok(toolbars) => toolbars,
         Err(_) => {
-            return SendButtonSnapshot {
-                state: SendButtonSnapshotState::QueryFailed,
-                candidate_bounds: conservative_send_candidate_bounds(editor_bounds, &[]),
-                ..base
-            };
+            inspection.error_code = Some("uia-send-toolbar-query-failed".to_owned());
+            return (
+                SendButtonSnapshot {
+                    state: SendButtonSnapshotState::QueryFailed,
+                    candidate_bounds: conservative_send_candidate_bounds(editor_bounds, &[]),
+                    ..base
+                },
+                inspection,
+            );
         }
     };
+    inspection.toolbar_count = Some(toolbars.len());
 
     let mut candidates = Vec::new();
     let mut toolbar_bounds = Vec::new();
@@ -1756,14 +2188,18 @@ fn find_send_button_snapshot(
         match find_named_send_button(automation, toolbar) {
             Ok(buttons) => candidates.extend(buttons.into_iter().map(|button| (button, bounds))),
             Err(_) => {
-                return SendButtonSnapshot {
-                    state: SendButtonSnapshotState::QueryFailed,
-                    candidate_bounds: conservative_send_candidate_bounds(
-                        editor_bounds,
-                        &toolbar_bounds,
-                    ),
-                    ..base
-                };
+                inspection.error_code = Some("uia-send-button-query-failed".to_owned());
+                return (
+                    SendButtonSnapshot {
+                        state: SendButtonSnapshotState::QueryFailed,
+                        candidate_bounds: conservative_send_candidate_bounds(
+                            editor_bounds,
+                            &toolbar_bounds,
+                        ),
+                        ..base
+                    },
+                    inspection,
+                );
             }
         }
     }
@@ -1773,32 +2209,44 @@ fn find_send_button_snapshot(
         match find_named_send_button(automation, root) {
             Ok(buttons) => candidates.extend(buttons.into_iter().map(|button| (button, None))),
             Err(_) => {
-                return SendButtonSnapshot {
-                    state: SendButtonSnapshotState::QueryFailed,
-                    candidate_bounds: conservative_send_candidate_bounds(editor_bounds, &[]),
-                    ..base
-                };
+                inspection.error_code = Some("uia-send-button-root-query-failed".to_owned());
+                return (
+                    SendButtonSnapshot {
+                        state: SendButtonSnapshotState::QueryFailed,
+                        candidate_bounds: conservative_send_candidate_bounds(editor_bounds, &[]),
+                        ..base
+                    },
+                    inspection,
+                );
             }
         }
     }
+    inspection.candidate_count = Some(candidates.len());
     let fallback_bounds = conservative_send_candidate_bounds(editor_bounds, &toolbar_bounds);
     let Some((button, toolbar_bounds)) = choose_send_button_candidate(candidates, editor_bounds)
     else {
-        return SendButtonSnapshot {
-            candidate_bounds: fallback_bounds,
-            ..base
-        };
+        return (
+            SendButtonSnapshot {
+                candidate_bounds: fallback_bounds,
+                ..base
+            },
+            inspection,
+        );
     };
 
     // SAFETY: property reads are synchronous calls on a live UI Automation element proxy.
     let enabled = match unsafe { button.CurrentIsEnabled() } {
         Ok(value) => value.as_bool(),
         Err(_) => {
-            return SendButtonSnapshot {
-                state: SendButtonSnapshotState::StateUnavailable,
-                candidate_bounds: conservative_send_candidate(toolbar_bounds, editor_bounds),
-                ..base
-            };
+            inspection.error_code = Some("uia-send-button-state-failed".to_owned());
+            return (
+                SendButtonSnapshot {
+                    state: SendButtonSnapshotState::StateUnavailable,
+                    candidate_bounds: conservative_send_candidate(toolbar_bounds, editor_bounds),
+                    ..base
+                },
+                inspection,
+            );
         }
     };
     // SAFETY: the bounding rectangle is copied immediately and no COM proxy escapes this scope.
@@ -1816,12 +2264,15 @@ fn find_send_button_snapshot(
     } else {
         SendButtonSnapshotState::Disabled
     };
-    SendButtonSnapshot {
-        state,
-        bounds,
-        candidate_bounds: conservative_send_candidate(toolbar_bounds, editor_bounds),
-        ..base
-    }
+    (
+        SendButtonSnapshot {
+            state,
+            bounds,
+            candidate_bounds: conservative_send_candidate(toolbar_bounds, editor_bounds),
+            ..base
+        },
+        inspection,
+    )
 }
 
 fn choose_send_button_candidate(
@@ -2104,14 +2555,12 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 mod tests {
     use super::{
         ScreenRect, SendButtonDiagnostic, SendButtonSnapshot, SendButtonSnapshotState,
-        TRUSTED_WEIXIN_PATH, WindowsContextProvider, normalize_draft_preview,
+        WindowsContextProvider, diagnostic_error_code, normalize_draft_preview,
         resolved_trusted_weixin_path, send_button_candidate_score,
     };
-    use std::{
-        path::PathBuf,
-        time::{Duration, SystemTime},
-    };
+    use std::time::{Duration, SystemTime};
     use wechat_send_guard_core::ChatContext;
+    use wechat_send_guard_platform_api::PlatformError;
 
     fn recognized_chat(observed_at: SystemTime) -> ChatContext {
         ChatContext {
@@ -2125,6 +2574,15 @@ mod tests {
             observed_at: Some(observed_at),
             ..ChatContext::default()
         }
+    }
+
+    #[test]
+    fn diagnostic_error_keeps_only_the_stable_code_and_hresult() {
+        let error = PlatformError::new(
+            "uia-query-failed",
+            "Element is unavailable. (0x80040201) private details are discarded",
+        );
+        assert_eq!(diagnostic_error_code(&error), "uia-query-failed:0x80040201");
     }
 
     #[test]
@@ -2193,11 +2651,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_external_path_override_disables_trust_instead_of_falling_back() {
-        assert_eq!(
-            resolved_trusted_weixin_path(None),
-            Some(PathBuf::from(TRUSTED_WEIXIN_PATH))
-        );
+    fn missing_or_invalid_external_path_disables_trust() {
+        assert_eq!(resolved_trusted_weixin_path(None), None);
         assert_eq!(
             resolved_trusted_weixin_path(Some(r"D:\Apps\Weixin\other.exe")),
             None

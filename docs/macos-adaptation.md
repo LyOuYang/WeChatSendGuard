@@ -35,7 +35,7 @@ Accessibility 扫描只在标题栏和消息编辑区读取定位所需字符串
 
 macOS 继续读写 `schemaVersion: 2`。历史字段 `trustedWeixinExecutablePath` 仅由 Windows 使用；macOS 界面只读显示签名身份并忽略该字段。为保持现有 schema，历史 JSON 字段 `startWithWindows` 在 macOS 组合根中解释为“登录 macOS 时启动”，但只由 macOS LaunchAgent 适配器执行，不改变规则语义。
 
-## 构建、签名与公证
+## 构建与签名
 
 准备 Rust 1.92+。Apple Silicon 开发包只需 `aarch64-apple-darwin` target，并可使用临时签名：
 
@@ -43,16 +43,17 @@ macOS 继续读写 `schemaVersion: 2`。历史字段 `trustedWeixinExecutablePat
 ./packaging/macos/build-app.sh
 ```
 
-正式候选需要提供 Developer ID Application 身份和 notarytool 钥匙串 profile：
+当前公开发布不需要 Apple Developer 账号，使用 Ad-hoc 签名构建 Universal DMG：
 
 ```bash
-MACOS_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
-MACOS_NOTARY_KEYCHAIN_PROFILE="wechat-send-guard-notary" \
+MACOS_CODESIGN_IDENTITY=- \
 MACOS_BUILD_KIND=universal \
 ./packaging/macos/build-app.sh
 ```
 
-默认脚本生成 `dist/macos/WeChatSendGuard-<VERSION>-arm64.dmg` 和同名 `.sha256`。设置 `MACOS_BUILD_KIND=universal` 时还需安装 `x86_64-apple-darwin` target，并生成正式发布使用的 universal DMG。应用内更新只接受 universal 命名；Windows 仍只接受自己的 `.exe` 资产。
+默认脚本生成 `dist/macos/WeChatSendGuard-<VERSION>-arm64.dmg` 和同名 `.sha256`。设置 `MACOS_BUILD_KIND=universal` 时还需安装 `x86_64-apple-darwin` target，并生成 GitHub Release 使用的 universal DMG。Beta 文件名可以包含完整 SemVer 预发布后缀，例如 `WeChatSendGuard-1.4.0-beta.1-universal.dmg`。由于 Apple 要求 `CFBundleShortVersionString` 和 `CFBundleVersion` 只能包含数字与点，脚本会将应用版本 `1.4.0-beta.1` 映射为数字短版本 `1.4.0` 和纯数字构建号；应用界面仍显示 Cargo 的完整版本。应用内更新只接受 universal 命名；Windows 仍只接受自己的 `.exe` 资产。普通用户不需要手动校验 `.sha256`，应用内更新会自动完成校验。
+
+Ad-hoc 签名不能替代 Developer ID 或公证，因此首次打开可能需要用户在 Finder 中右键选择“打开”，或在“系统设置 → 隐私与安全性”中选择“仍要打开”。如果系统报告“应用已损坏”，先重新下载；仍失败时可使用 `xattr -dr com.apple.quarantine /Applications/WeChatSendGuard.app` 排障。未来购买 Apple Developer 账号后，可以在不改变产物命名的前提下增加 Developer ID、公证和 stapling。
 
 ## 验证边界
 
