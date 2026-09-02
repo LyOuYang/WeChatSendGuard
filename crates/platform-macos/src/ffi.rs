@@ -38,7 +38,7 @@ impl Default for MacContextSnapshot {
     }
 }
 
-pub type KeyboardCallback = unsafe extern "C" fn(u16, bool, bool, *mut c_void) -> bool;
+pub type KeyboardCallback = unsafe extern "C" fn(u16, bool, bool, bool, *mut c_void) -> bool;
 pub type MouseCallback = unsafe extern "C" fn(i32, i32, *mut c_void) -> bool;
 
 unsafe extern "C" {
