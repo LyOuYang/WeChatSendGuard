@@ -36,6 +36,7 @@ case "$BUILD_KIND" in
 esac
 
 DISK_IMAGE="$DIST_DIRECTORY/WeChatSendGuard-${PRODUCT_VERSION}-${PACKAGE_ARCHITECTURE}.dmg"
+DISK_IMAGE_NAME="$(basename "$DISK_IMAGE")"
 
 cd "$REPOSITORY_ROOT"
 "$BUILD_TOOL" fmt --all -- --check
@@ -97,5 +98,6 @@ if [[ "$SIGNING_IDENTITY" != "-" ]]; then
     xcrun stapler staple "$DISK_IMAGE"
 fi
 
-shasum -a 256 "$DISK_IMAGE" > "$DISK_IMAGE.sha256"
+(cd "$DIST_DIRECTORY" && shasum -a 256 "$DISK_IMAGE_NAME") > "$DISK_IMAGE.sha256"
+(cd "$DIST_DIRECTORY" && shasum -a 256 -c "$DISK_IMAGE_NAME.sha256")
 echo "Created $DISK_IMAGE"

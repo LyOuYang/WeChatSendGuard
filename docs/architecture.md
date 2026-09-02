@@ -2,7 +2,7 @@
 
 ## 版本与范围
 
-`1.2.0` 是 WeChatSendGuard 当前已发布的 Windows 正式版本。本开发分支已新增 macOS 适配候选实现；在完成签名、公证和真实客户端人工清单前，不声明 macOS 正式兼容。Windows 与 macOS 不共享二进制、安装器或系统 API，Linux 仍未实现。
+`1.3.1` 是 WeChatSendGuard 当前发布版本，同时提供 Windows 安装包和 macOS Universal DMG。macOS 使用 Ad-hoc 签名且未公证，首次打开可能需要用户按 Gatekeeper 提示允许；具体微信版本兼容性仍以真实客户端人工清单为准。Windows 与 macOS 不共享二进制、安装器或系统 API，Linux 仍未实现。
 
 本项目的目标是在受支持的微信桌面版中，为一次 `Enter` 或点击“发送”按钮的消息发送增加可取消的确认步骤。用户可选择仅保护指定名单，或启用全局防护（白名单）模式。架构把产品规则、界面和操作系统集成拆开：后续平台可以复用规则与界面契约，但必须独立实现自己的受信任进程识别、前台上下文读取和输入控制。
 
@@ -101,7 +101,7 @@ macOS 适配器固定校验受信任微信的代码签名身份：bundle 标识 
 
 ## 配置、数据与版本
 
-Windows 设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，macOS 设置文件位于 `~/Library/Application Support/WeChatSendGuard/settings.json`；两者使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.2.0`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径；macOS 忽略该 Windows 专用字段。
+Windows 设置文件位于 `%LocalAppData%\WeChatSendGuard\settings.json`，macOS 设置文件位于 `~/Library/Application Support/WeChatSendGuard/settings.json`；两者使用 `camelCase` 字段和 PascalCase 枚举值。应用版本和配置架构版本独立：当前应用版本为 `1.3.1`，`schemaVersion` 仍为 `2`。新增的可选路径字段是向后兼容的扩展，旧设置文件不包含它时仍使用 Windows 默认路径；macOS 忽略该 Windows 专用字段。
 
 默认路径不会写进 JSON；自定义路径会以如下形式保存：
 
@@ -137,4 +137,4 @@ Slint 是当前和后续平台共用的界面技术。`crates/desktop-ui/ui/app.
 
 ## 打包目标
 
-Windows 安装器是当前用户范围的原生包，包含 Rust 应用和 Slint 运行时，x64 安装包目标不超过 15 MB。macOS 使用独立的 universal `.app`/`.dmg`，正式发布必须使用 Developer ID 签名、Hardened Runtime、公证和 stapling；应用内更新分别选择 `.exe` 或 universal `.dmg` 及其同名 SHA-256 文件。用户无需预装 .NET 或其他运行时，两个平台的安装产物不能互用。
+Windows 安装器是当前用户范围的原生包，包含 Rust 应用和 Slint 运行时，x64 安装包目标不超过 15 MB。macOS 使用独立的 universal `.app`/`.dmg`，当前公开发布使用 Ad-hoc 签名和 Hardened Runtime，未配置 Developer ID、公证或 stapling；应用内更新分别选择 `.exe` 或 universal `.dmg` 及其同名 SHA-256 文件。用户无需预装 .NET 或其他运行时，两个平台的安装产物不能互用。
