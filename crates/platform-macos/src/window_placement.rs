@@ -29,6 +29,10 @@ pub fn activate_window(native_view: isize) {
     unsafe { ffi::WSGMacActivateWindow(native_view as i64) };
 }
 
+pub fn apply_popup_window_decorations(_native_view: isize) {}
+
+pub fn apply_main_window_decorations(_native_view: isize) {}
+
 pub fn show_error_dialog(message: &str) {
     let sanitized = message.replace('\0', " ");
     let message = CString::new(sanitized).expect("NUL bytes were removed");

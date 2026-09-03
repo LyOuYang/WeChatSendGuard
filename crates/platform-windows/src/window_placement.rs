@@ -119,6 +119,57 @@ fn clamp_to_i32(value: i64) -> i32 {
     value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+/// Configures lightweight rounded corners and gentle drop shadow for a popup dialog on Windows 11.
+///
+/// Uses `DWMWCP_ROUNDSMALL` which provides tight, subtle drop shadow without heavy black borders,
+/// specifically designed for dialogs and flyouts.
+/// On Windows 10 or earlier where `DWMWA_WINDOW_CORNER_PREFERENCE` is unsupported,
+/// this call safely returns without error.
+pub fn apply_popup_window_decorations(window_handle: isize) {
+    if window_handle == 0 {
+        return;
+    }
+
+    unsafe {
+        use windows::Win32::Graphics::Dwm::{
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUNDSMALL, DwmSetWindowAttribute,
+        };
+
+        let hwnd = HWND(window_handle as _);
+        let preference = DWMWCP_ROUNDSMALL;
+        // SAFETY: HWND is caller-provided and DwmSetWindowAttribute reads only the stack-allocated preference.
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &preference as *const _ as _,
+            std::mem::size_of_val(&preference) as u32,
+        );
+    }
+}
+
+/// Configures standard application-window rounded corners and full drop shadow on Windows 11.
+pub fn apply_main_window_decorations(window_handle: isize) {
+    if window_handle == 0 {
+        return;
+    }
+
+    unsafe {
+        use windows::Win32::Graphics::Dwm::{
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+        };
+
+        let hwnd = HWND(window_handle as _);
+        let preference = DWMWCP_ROUND;
+        // SAFETY: HWND is caller-provided and DwmSetWindowAttribute reads only the stack-allocated preference.
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &preference as *const _ as _,
+            std::mem::size_of_val(&preference) as u32,
+        );
+    }
+}
+
 /// Configures Per-Monitor V2 high-DPI awareness on Windows 10/11 to avoid DWM bitmap stretching.
 pub fn enable_high_dpi_awareness() {
     unsafe {

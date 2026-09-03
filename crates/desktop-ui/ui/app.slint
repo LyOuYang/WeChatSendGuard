@@ -13,17 +13,17 @@ component NavItem inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 40px;
-    border-radius: 8px;
-    background: area.pressed ? #def7ec : (root.selected ? #eaf8f1 : (area.has-hover ? #f1f5f9 : #00000000));
-    animate background { duration: 150ms; easing: ease-out; }
+    height: 38px;
+    border-radius: 6px;
+    background: area.pressed ? #d8d8d8 : (root.selected ? #ffffff : (area.has-hover ? #e6e6e6 : #00000000));
+    animate background { duration: 120ms; easing: ease-out; }
 
     if (root.selected) : Rectangle {
-        x: 4px;
-        y: 9px;
-        width: 3.5px;
-        height: parent.height - 18px;
-        border-radius: 2px;
+        x: 0px;
+        y: 10px;
+        width: 3px;
+        height: parent.height - 20px;
+        border-radius: 1.5px;
         background: #07c160;
     }
 
@@ -33,9 +33,9 @@ component NavItem inherits Rectangle {
         width: parent.width - 24px;
         height: parent.height;
         text: root.label;
-        color: root.selected ? #059669 : (area.has-hover ? #0f172a : #475569);
+        color: root.selected ? #07c160 : (area.has-hover ? #111827 : #4b5563);
         font-size: 13px;
-        font-weight: root.selected ? 700 : 400;
+        font-weight: root.selected ? 600 : 400;
         vertical-alignment: center;
         animate color { duration: 120ms; }
     }
@@ -53,15 +53,15 @@ component AppButton inherits Rectangle {
 
     height: 34px;
     min-width: 60px;
-    border-radius: 7px;
-    border-width: root.primary ? 0px : 1px;
-    border-color: root.danger ? (area.has-hover ? #f87171 : #fca5a5) : (area.has-hover ? #cbd5e1 : #e2e8f0);
-    background: !root.active ? #f1f5f9 : 
+    border-radius: 4px;
+    border-width: root.primary ? 0px : (root.danger ? 1px : 0px);
+    border-color: root.danger ? (area.has-hover ? #fda4af : #fecdd3) : #00000000;
+    background: !root.active ? #f5f5f5 : 
         (root.primary ? 
             (area.pressed ? #059b4c : (area.has-hover ? #06ad56 : #07c160)) : 
             (root.danger ? 
-                (area.pressed ? #fecaca : (area.has-hover ? #fee2e2 : #fff5f5)) : 
-                (area.pressed ? #f1f5f9 : (area.has-hover ? #f8fafc : #ffffff))));
+                (area.pressed ? #fee2e2 : (area.has-hover ? #fff1f2 : #ffffff)) : 
+                (area.pressed ? #d9d9d9 : (area.has-hover ? #e5e5e5 : #f2f2f2))));
     opacity: root.active ? 1.0 : 0.45;
     animate background { duration: 120ms; easing: ease-out; }
     animate border-color { duration: 120ms; easing: ease-out; }
@@ -70,7 +70,7 @@ component AppButton inherits Rectangle {
         width: parent.width;
         height: parent.height;
         text: root.label;
-        color: root.primary ? #ffffff : (root.danger ? #dc2626 : #334155);
+        color: !root.active ? #b2b2b2 : (root.primary ? #ffffff : (root.danger ? #e11d48 : #1f2937));
         font-size: 13px;
         font-weight: 400;
         horizontal-alignment: center;
@@ -87,19 +87,19 @@ component WindowControlButton inherits Rectangle {
     in property <bool> close-action: false;
     callback clicked();
 
-    width: 46px;
-    height: 38px;
+    width: 42px;
+    height: 36px;
     background: area.pressed ? 
-        (root.close-action ? #b91c1c : #e2e8f0) : 
-        (area.has-hover ? (root.close-action ? #e81123 : #f1f5f9) : #00000000);
-    animate background { duration: 120ms; easing: ease-out; }
+        (root.close-action ? #d93a3a : #d9d9d9) : 
+        (area.has-hover ? (root.close-action ? #fa5151 : #e8e8e8) : #00000000);
+    animate background { duration: 100ms; easing: ease-out; }
 
     if (!root.close-action) : Rectangle {
         width: 11px;
         height: 1.2px;
         y: (parent.height - self.height) / 2;
         x: (parent.width - self.width) / 2;
-        background: area.pressed ? #0f172a : (area.has-hover ? #1e293b : #64748b);
+        background: area.pressed ? #111827 : (area.has-hover ? #111827 : #595959);
     }
 
     if (root.close-action) : Path {
@@ -107,7 +107,7 @@ component WindowControlButton inherits Rectangle {
         height: 10px;
         y: (parent.height - self.height) / 2;
         x: (parent.width - self.width) / 2;
-        stroke: area.has-hover ? #ffffff : #64748b;
+        stroke: area.has-hover ? #ffffff : #595959;
         stroke-width: 1.2px;
         commands: "M 0.5 0.5 L 9.5 9.5 M 9.5 0.5 L 0.5 9.5";
     }
@@ -408,8 +408,7 @@ export component AppWindow inherits Window {
     width: 920px;
     height: 680px;
     no-frame: true;
-    resize-border-width: 8px;
-    background: #ffffff;
+    background: #00000000;
     default-font-family: root.ui-font-family;
     default-font-size: 13px;
     default-font-weight: 400;
@@ -495,159 +494,159 @@ export component AppWindow inherits Window {
     frame := Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #f8fafc;
+        background: #ffffff;
+        border-radius: 8px;
         border-width: 1px;
-        border-color: #64748b;
+        border-color: #cbd5e1;
         clip: true;
         HorizontalLayout {
-        spacing: 0px;
-        Rectangle {
-            width: 220px;
-            background: #f1f5f9;
-            border-width: 1px;
-            border-color: #cbd5e1;
-            VerticalLayout {
-                padding: 16px;
-                spacing: 8px;
-                HorizontalLayout {
-                    height: 40px;
-                    spacing: 10px;
-                    alignment: center;
-                    Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        border-radius: 8px;
-                        background: root.protection-enabled ? #e8f8f0 : #f1f5f9;
-                        border-width: 1px;
-                        border-color: root.protection-enabled ? #bbf7d0 : #e2e8f0;
-                        Image {
-                            width: 20px;
-                            height: 20px;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
-                            source: root.protection-enabled ? @image-url("../assets/tray-active.svg") : @image-url("../assets/tray-inactive.svg");
-                        }
-                    }
-                    VerticalLayout {
-                        horizontal-stretch: 1;
+            spacing: 0px;
+            Rectangle {
+                width: 210px;
+                background: #f0f0f0;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        height: 40px;
+                        spacing: 10px;
                         alignment: center;
-                        spacing: 1px;
-                        Text {
-                            text: "WeChatSendGuard";
-                            color: #0f172a;
-                            font-size: 14px;
-                            font-weight: 700;
-                            vertical-alignment: center;
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 6px;
+                            background: root.protection-enabled ? #e8f8f0 : #e5e5e5;
+                            Image {
+                                width: 20px;
+                                height: 20px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                source: root.protection-enabled ? @image-url("../assets/tray-active.svg") : @image-url("../assets/tray-inactive.svg");
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 1px;
+                            Text {
+                                text: "WeChatSendGuard";
+                                color: #111827;
+                                font-size: 14px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "微信发送安全守护";
+                                color: #888888;
+                                font-size: 11px;
+                                font-weight: 400;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle { height: 10px; background: #00000000; }
+                    NavItem {
+                        label: "守护名单";
+                        selected: root.active-page == 0;
+                        clicked => { root.active-page = 0; root.page-selected(0); }
+                    }
+                    NavItem {
+                        label: "确认与拦截";
+                        selected: root.active-page == 1;
+                        clicked => { root.active-page = 1; root.page-selected(1); }
+                    }
+                    NavItem {
+                        label: "通用设置";
+                        selected: root.active-page == 2;
+                        clicked => { root.active-page = 2; root.page-selected(2); }
+                    }
+                    NavItem {
+                        label: "关于";
+                        selected: root.active-page == 3;
+                        clicked => { root.active-page = 3; root.page-selected(3); }
+                    }
+                    Rectangle { vertical-stretch: 1; background: #00000000; }
+                    Rectangle {
+                        height: 56px;
+                        border-radius: 6px;
+                        background: #ffffff;
+                        border-width: 1px;
+                        border-color: #e5e5e5;
+                        Rectangle {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: (!root.protection-enabled || root.protection-paused) ? #94a3b825 : (root.status-healthy ? #07c16025 : #f59e0b25);
+                        }
+                        Rectangle {
+                            x: 13px;
+                            y: (parent.height - self.height) / 2;
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: (!root.protection-enabled || root.protection-paused) ? #94a3b8 : (root.status-healthy ? #07c160 : #f59e0b);
                         }
                         Text {
-                            text: "微信发送安全守护";
-                            color: #64748b;
+                            x: 30px;
+                            y: 0px;
+                            width: parent.width - 42px;
+                            height: parent.height;
+                            text: root.status-text;
+                            color: root.status-healthy ? #07c160 : #4b5563;
                             font-size: 11px;
-                            font-weight: 400;
+                            font-weight: root.status-healthy ? 600 : 400;
                             vertical-alignment: center;
+                            wrap: word-wrap;
                         }
-                    }
-                }
-                Rectangle { height: 10px; background: #00000000; }
-                NavItem {
-                    label: "守护名单";
-                    selected: root.active-page == 0;
-                    clicked => { root.active-page = 0; root.page-selected(0); }
-                }
-                NavItem {
-                    label: "确认与拦截";
-                    selected: root.active-page == 1;
-                    clicked => { root.active-page = 1; root.page-selected(1); }
-                }
-                NavItem {
-                    label: "通用设置";
-                    selected: root.active-page == 2;
-                    clicked => { root.active-page = 2; root.page-selected(2); }
-                }
-                NavItem {
-                    label: "关于";
-                    selected: root.active-page == 3;
-                    clicked => { root.active-page = 3; root.page-selected(3); }
-                }
-                Rectangle { vertical-stretch: 1; background: #00000000; }
-                Rectangle {
-                    height: 60px;
-                    border-radius: 8px;
-                    background: #ffffff;
-                    border-width: 1px;
-                    border-color: #e2e8f0;
-                    Rectangle {
-                        x: 10px;
-                        y: (parent.height - self.height) / 2;
-                        width: 14px;
-                        height: 14px;
-                        border-radius: 7px;
-                        background: (!root.protection-enabled || root.protection-paused) ? #94a3b825 : (root.status-healthy ? #07c16025 : #f59e0b25);
-                    }
-                    Rectangle {
-                        x: 13px;
-                        y: (parent.height - self.height) / 2;
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: (!root.protection-enabled || root.protection-paused) ? #94a3b8 : (root.status-healthy ? #07c160 : #f59e0b);
-                    }
-                    Text {
-                        x: 30px;
-                        y: 0px;
-                        width: parent.width - 42px;
-                        height: parent.height;
-                        text: root.status-text;
-                        color: root.status-healthy ? #059669 : #475569;
-                        font-size: 11px;
-                        font-weight: root.status-healthy ? 600 : 400;
-                        vertical-alignment: center;
-                        wrap: word-wrap;
                     }
                 }
             }
-        }
-
-        Rectangle {
-            background: #f8fafc;
-            VerticalLayout {
-                Rectangle {
-                    height: 40px;
-                    background: #f8fafc;
-                    drag-area := TouchArea {
-                        width: parent.width - 92px;
-                        height: parent.height;
-                        pointer-event(event) => {
-                            if (event.kind == PointerEventKind.down) {
-                                root.title-bar-pressed();
+            Rectangle {
+                width: 1px;
+                background: #e5e5e5;
+            }
+            Rectangle {
+                background: #ffffff;
+                VerticalLayout {
+                    Rectangle {
+                        height: 38px;
+                        background: #ffffff;
+                        drag-area := TouchArea {
+                            width: parent.width - 84px;
+                            height: parent.height;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    root.title-bar-pressed();
+                                }
+                            }
+                            moved => {
+                                root.title-bar-moved();
                             }
                         }
-                        moved => {
-                            root.title-bar-moved();
+                        WindowControlButton {
+                            x: parent.width - 84px;
+                            y: 0px;
+                            close-action: false;
+                            clicked => { root.minimize-requested(); }
+                        }
+                        WindowControlButton {
+                            x: parent.width - 42px;
+                            y: 0px;
+                            close-action: true;
+                            clicked => { root.close-requested(); }
                         }
                     }
-                    WindowControlButton {
-                        x: parent.width - 92px;
-                        y: 0px;
-                        close-action: false;
-                        clicked => { root.minimize-requested(); }
-                    }
-                    WindowControlButton {
-                        x: parent.width - 46px;
-                        y: 0px;
-                        close-action: true;
-                        clicked => { root.close-requested(); }
-                    }
-                }
-                Rectangle {
-                    vertical-stretch: 1;
-                    background: #f8fafc;
-                    VerticalLayout {
-                        padding-top: 18px;
-                        padding-bottom: 18px;
-                        padding-left: 24px;
-                        padding-right: 24px;
-                        spacing: 12px;
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding-top: 14px;
+                            padding-bottom: 20px;
+                            padding-left: 24px;
+                            padding-right: 24px;
+                            spacing: 12px;
 
                 if (root.active-page == 0) : Rectangle {
                     vertical-stretch: 1;
@@ -1246,7 +1245,7 @@ export component ConfirmationWindow inherits Window {
     height: 322px + (root.confirmation-mode == 2 ? 40px : 0px);
     no-frame: true;
     always-on-top: true;
-    background: #ffffff;
+    background: #00000000;
     default-font-family: "Microsoft YaHei";
     default-font-size: 13px;
     default-font-weight: 400;
@@ -1285,9 +1284,11 @@ export component ConfirmationWindow inherits Window {
             width: parent.width;
             height: parent.height;
             background: #ffffff;
+            border-radius: 8px;
             border-width: 1px;
-            border-color: #64748b;
+            border-color: #cbd5e1;
             clip: true;
+
             VerticalLayout {
                 padding: 20px;
                 spacing: 10px;
@@ -1307,19 +1308,19 @@ export component ConfirmationWindow inherits Window {
                         vertical-alignment: center;
                     }
                     Rectangle {
-                        x: parent.width - 62px;
+                        x: parent.width - 66px;
                         y: 0px;
-                        width: 62px;
+                        width: 66px;
                         height: 20px;
-                        border-radius: 4px;
+                        border-radius: 10px;
                         border-width: 1px;
-                        border-color: #e2e8f0;
-                        background: #f1f5f9;
+                        border-color: #e5e5e5;
+                        background: #f7f7f7;
                         Text {
                             width: parent.width;
                             height: parent.height;
                             text: "Esc 取消";
-                            color: #64748b;
+                            color: #888888;
                             font-size: 11px;
                             horizontal-alignment: center;
                             vertical-alignment: center;

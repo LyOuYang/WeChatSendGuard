@@ -44,5 +44,6 @@ pub use trust::{
 };
 #[cfg(windows)]
 pub use window_placement::{
-    activate_window, center_popup_over_window, cursor_screen_position, enable_high_dpi_awareness,
+    activate_window, apply_main_window_decorations, apply_popup_window_decorations,
+    center_popup_over_window, cursor_screen_position, enable_high_dpi_awareness,
 };

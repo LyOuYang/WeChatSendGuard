@@ -45,6 +45,6 @@ pub use trust::{
 };
 #[cfg(target_os = "macos")]
 pub use window_placement::{
-    activate_window, center_popup_over_window, cursor_screen_position, operating_system_version,
-    show_error_dialog,
+    activate_window, apply_main_window_decorations, apply_popup_window_decorations,
+    center_popup_over_window, cursor_screen_position, operating_system_version, show_error_dialog,
 };

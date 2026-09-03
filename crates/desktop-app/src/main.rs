@@ -40,7 +40,8 @@ use wechat_send_guard_platform_macos::{
     MacKeyboardHook as PlatformKeyboardHook, MacMouseHook as PlatformMouseHook,
     MacSendButtonDiagnostic as PlatformSendButtonDiagnostic,
     MacStartupRegistration as PlatformStartupRegistration, TRUSTED_WECHAT_BUNDLE_ID,
-    activate_window, center_popup_over_window, cursor_screen_position, default_audit_log_directory,
+    activate_window, apply_main_window_decorations, apply_popup_window_decorations,
+    center_popup_over_window, cursor_screen_position, default_audit_log_directory,
     installed_wechat_version, operating_system_version as macos_operating_system_version,
     select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
     show_error_dialog, trusted_wechat_identity,
@@ -53,9 +54,10 @@ use wechat_send_guard_platform_windows::{
     WindowsInputInjector as PlatformInputInjector, WindowsKeyboardHook as PlatformKeyboardHook,
     WindowsMouseHook as PlatformMouseHook,
     WindowsStartupRegistration as PlatformStartupRegistration, activate_window,
-    center_popup_over_window, cursor_screen_position, default_audit_log_directory,
-    discover_running_weixin_executable, enable_high_dpi_awareness, path_matches_configured_weixin,
-    select_diagnostic_export, select_protected_chat_export, select_protected_chat_import,
+    apply_main_window_decorations, apply_popup_window_decorations, center_popup_over_window,
+    cursor_screen_position, default_audit_log_directory, discover_running_weixin_executable,
+    enable_high_dpi_awareness, path_matches_configured_weixin, select_diagnostic_export,
+    select_protected_chat_export, select_protected_chat_import,
 };
 use wechat_send_guard_service::{
     CompletionResult, EnterHandling, GuardService, PhysicalEnter, TEMPORARY_BYPASS_CONTEXT_MAX_AGE,
@@ -738,6 +740,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let _ = tray.show();
     if !start_in_background {
         main_window.show()?;
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(window_handle) = native_window_handle(main_window.window()) {
+            apply_main_window_decorations(window_handle);
+        }
     }
     slint::run_event_loop()?;
 
@@ -1773,6 +1779,7 @@ fn show_and_restore_main_window(window: &AppWindow) {
     let _ = window.show();
     #[cfg(any(windows, target_os = "macos"))]
     if let Some(window_handle) = native_window_handle(window.window()) {
+        apply_main_window_decorations(window_handle);
         activate_window(window_handle);
     }
 }
@@ -2547,8 +2554,12 @@ fn show_confirmation(
         _hold_timer: hold_timer,
     });
 
-    confirmation.show().map_err(|error| error.to_string())?;
     position_confirmation_over_target(&confirmation, &pending);
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Some(window_handle) = native_window_handle(confirmation.window()) {
+        apply_popup_window_decorations(window_handle);
+    }
+    confirmation.show().map_err(|error| error.to_string())?;
     confirmation.invoke_focus_default();
     schedule_confirmation_focus(&confirmation);
     enrich_confirmation_preview(confirmation.as_weak(), service, pending);
@@ -2605,11 +2616,26 @@ fn position_confirmation_over_target(
     confirmation: &ConfirmationWindow,
     pending: &PendingConfirmation,
 ) {
+    let scale = confirmation.window().scale_factor();
+    let confirmation_mode = confirmation.get_confirmation_mode();
+    let logical_width = 460.0;
+    let logical_height = if confirmation_mode == 2 { 362.0 } else { 322.0 };
     let popup_size = confirmation.window().size();
+    let popup_width = if popup_size.width > 0 {
+        popup_size.width
+    } else {
+        (logical_width * scale).round() as u32
+    };
+    let popup_height = if popup_size.height > 0 {
+        popup_size.height
+    } else {
+        (logical_height * scale).round() as u32
+    };
+
     if let Some((x, y)) = center_popup_over_window(
         pending.original_context.window_handle,
-        popup_size.width,
-        popup_size.height,
+        popup_width,
+        popup_height,
     ) {
         confirmation
             .window()
