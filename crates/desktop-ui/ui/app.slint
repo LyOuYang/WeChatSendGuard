@@ -786,7 +786,6 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         spacing: 14px;
                         Text { height: 26px; text: "确认与拦截"; color: #0f172a; font-size: 20px; font-weight: 700; }
-                        Text { height: 20px; text: "二次确认只在规则命中时出现；Shift+Enter 始终放行。"; color: #64748b; font-size: 12px; }
                         Rectangle {
                             height: 276px;
                             vertical-stretch: 0;
@@ -862,7 +861,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         Rectangle {
-                            height: 116px;
+                            height: 96px;
                             vertical-stretch: 0;
                             border-radius: 9px;
                             border-width: 1px;
@@ -898,7 +897,6 @@ export component AppWindow inherits Window {
                                         toggled(value) => { root.intercept-numpad-enter = value; root.numpad-enter-toggled(value); }
                                     }
                                 }
-                                Text { height: 18px; text: "💡 提示：Shift+Enter 与输入法候选确认始终放行。"; color: #64748b; font-size: 11px; }
                             }
                         }
                         Rectangle { vertical-stretch: 1; background: #00000000; }
