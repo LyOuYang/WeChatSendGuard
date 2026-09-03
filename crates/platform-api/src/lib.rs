@@ -371,17 +371,23 @@ pub trait AuditLog: Send + Sync {
 #[derive(Debug, Default)]
 pub struct FakeChatContextProvider {
     current: Mutex<ChatContext>,
+    draft_preview: Mutex<Option<String>>,
 }
 
 impl FakeChatContextProvider {
     pub fn new(context: ChatContext) -> Self {
         Self {
             current: Mutex::new(context),
+            draft_preview: Mutex::new(None),
         }
     }
 
     pub fn set_current(&self, context: ChatContext) {
         *lock_unpoisoned(&self.current) = context;
+    }
+
+    pub fn set_draft_preview(&self, preview: Option<String>) {
+        *lock_unpoisoned(&self.draft_preview) = preview;
     }
 }
 
@@ -404,7 +410,7 @@ impl SendTargetPlatform for FakeChatContextProvider {
     }
 
     fn read_draft_preview(&self, _expected: &ChatContext) -> PlatformResult<Option<String>> {
-        Ok(None)
+        Ok(lock_unpoisoned(&self.draft_preview).clone())
     }
 }
 

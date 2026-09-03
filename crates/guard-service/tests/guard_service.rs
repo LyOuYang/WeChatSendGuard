@@ -92,6 +92,43 @@ fn fake_platform_can_exercise_full_confirm_then_recorded_injection_flow() {
 }
 
 #[test]
+fn confirmation_preview_is_read_after_suppression_and_traced_without_logging_content() {
+    let platform = Arc::new(FakeChatContextProvider::new(protected_context("工作群")));
+    platform.set_draft_preview(Some("仅测试预览".to_owned()));
+    let audit = Arc::new(RecordingAuditLog::default());
+    let service = GuardService::new(
+        AppSettings {
+            protected_chats: vec![ProtectedChat {
+                match_title: "工作群".into(),
+                target_kind: ChatTargetKind::Group,
+                ..ProtectedChat::default()
+            }],
+            ..AppSettings::default()
+        },
+        platform,
+        Arc::new(RecordingInputInjector::default()),
+        audit.clone(),
+    );
+
+    let EnterHandling::SuppressAndConfirm(pending) =
+        service.handle_physical_enter(physical_enter(), fixed_now())
+    else {
+        panic!("protected physical enter should request confirmation");
+    };
+    let enriched = service.enrich_pending_confirmation(&pending);
+
+    assert_eq!(enriched.draft_preview.as_deref(), Some("仅测试预览"));
+    let entry = audit
+        .entries()
+        .into_iter()
+        .find(|entry| entry.event_type == "confirmation-preview")
+        .expect("preview audit entry");
+    assert_eq!(entry.result, "available");
+    assert_eq!(entry.trace_id, Some(pending.trace_id));
+    assert!(entry.details.is_empty());
+}
+
+#[test]
 fn confirmation_accepts_a_revalidation_completed_after_the_call_timestamp() {
     let mut context = protected_context("工作群");
     context.observed_at = Some(fixed_now() + Duration::from_secs(2));

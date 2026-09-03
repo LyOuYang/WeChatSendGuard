@@ -63,3 +63,9 @@ Logs must never contain message text, draft text, chat titles, clipboard data, s
 ## Commits & Pull Requests
 
 Recent commits use short, focused Chinese summaries, sometimes with a `fix` prefix (for example, `fix：无法获取微信联系人bug`). Keep that concise style and make each commit one logical change. Pull requests should explain the behavioral and security impact, list validation commands run, link relevant issues, and include screenshots for Slint UI changes. Flag changes to settings schemas, trusted executable handling, keyboard interception, or audit data for explicit review.
+
+## logs
+
+1. Log Key Functions: Core features must include troubleshooting logs to ensure user-reported issues are traceable.
+2. Prioritize log analysis when errors occur. First, clarify whether the issue requires local or external logs; if external, request the specific log directory. Proactively ask for details such as the time of occurrence and symptoms to aid diagnosis.
+3. Supplement Missing Logs: If existing logs cannot identify the issue, they must be added concurrently during the fix.

@@ -456,15 +456,32 @@ impl GuardService {
             .map(|current| current.attempt_id)
             != Some(pending.attempt_id)
         {
+            self.write_audit(
+                pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+                Some(pending.trace_id),
+                "confirmation-preview",
+                "stale-attempt",
+                SystemTime::now(),
+            );
             return pending.clone();
         }
 
         let mut enriched = pending.clone();
-        enriched.draft_preview = self
-            .platform
-            .read_draft_preview(&pending.original_context)
-            .ok()
-            .flatten();
+        let preview_result = match self.platform.read_draft_preview(&pending.original_context) {
+            Ok(Some(preview)) => {
+                enriched.draft_preview = Some(preview);
+                "available"
+            }
+            Ok(None) => "empty",
+            Err(_) => "unavailable",
+        };
+        self.write_audit(
+            pending.decision.protected_chat.as_ref().map(|chat| chat.id),
+            Some(pending.trace_id),
+            "confirmation-preview",
+            preview_result,
+            SystemTime::now(),
+        );
         enriched
     }
 

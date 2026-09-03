@@ -709,8 +709,18 @@ impl WindowsContextProvider {
     }
 
     fn read_preview_for_expected(&self, expected: &ChatContext) -> PlatformResult<Option<String>> {
-        let fresh = self.refresh_foreground();
-        if !SendGuardStateMachine::represents_same_session(expected, &fresh) {
+        // The confirmation window owns the foreground after suppression. Re-reading the current
+        // foreground here would therefore compare the expected Weixin session with this app's
+        // window and always discard the preview. The pending context already pins the original
+        // trusted HWND; read that window directly. Final send authorization still performs the
+        // foreground/focus revalidation in `restore_editor_focus_and_refresh`.
+        if expected.window_handle == 0
+            || expected.process_id == 0
+            || !expected.is_trusted_weixin
+            || !expected.is_compatibility_available
+            || !expected.is_known_chat()
+            || expected.normalized_chat_title().is_empty()
+        {
             return Ok(None);
         }
 
@@ -2456,7 +2466,12 @@ fn read_draft_preview(editor: &IUIAutomationElement) -> Option<String> {
     {
         // SAFETY: the pattern proxy remains valid through this synchronous property read.
         if let Ok(value) = unsafe { pattern.CurrentValue() } {
-            return normalize_draft_preview(value.to_string());
+            // Some Weixin editor providers expose ValuePattern but leave its value empty while
+            // exposing the actual draft through TextPattern. Only stop when ValuePattern yielded
+            // usable text so an empty value cannot mask the fallback.
+            if let Some(preview) = normalize_draft_preview(value.to_string()) {
+                return Some(preview);
+            }
         }
     }
     // SAFETY: retrieving a supported text pattern is a synchronous query on a live element.

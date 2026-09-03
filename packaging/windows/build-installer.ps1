@@ -3,6 +3,10 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$MakensisPath,
 
+    [Parameter(Mandatory = $false)]
+    [ValidatePattern("^[0-9A-Za-z][0-9A-Za-z.-]*$")]
+    [string]$BuildId,
+
     [switch]$SkipBuild
 )
 
@@ -49,7 +53,12 @@ if (-not (Test-Path -LiteralPath $applicationPath -PathType Leaf)) {
 
 $outputDirectory = Join-Path $repositoryRoot "dist\windows"
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
-$installerPath = Join-Path $outputDirectory "WeChatSendGuard-Setup-$version.exe"
+$installerFileName = if ($BuildId) {
+    "WeChatSendGuard-Setup-$version-$BuildId.exe"
+} else {
+    "WeChatSendGuard-Setup-$version.exe"
+}
+$installerPath = Join-Path $outputDirectory $installerFileName
 $installerScript = Join-Path $PSScriptRoot "WeChatSendGuard.nsi"
 $windowsVersion = "{0}.{1}.{2}.0" -f $versionMatch.Groups["major"].Value, $versionMatch.Groups["minor"].Value, $versionMatch.Groups["patch"].Value
 
